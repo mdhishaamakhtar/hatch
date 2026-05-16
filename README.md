@@ -5,7 +5,7 @@ to years in advance.
 
 Stack: Go, PostgreSQL, Kafka (KRaft), bbolt, Redis, pluggable providers.
 
-Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live in Notion.
+Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](https://ruby-spectacles-2bc.notion.site/Hatch-34123f950a298115a7cec9d05a4d99f4)
 
 ---
 
