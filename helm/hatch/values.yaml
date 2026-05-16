@@ -1,0 +1,24 @@
+# Default values for the Hatch chart. Phase 0 deploys only data infra
+# (services are toggled off via services.enabled and become real templates in
+# later Build Plan phases).
+services:
+  enabled: false
+
+postgres:
+  image: postgres:17-alpine
+  database: hatch
+  user: hatch
+  storage: 5Gi
+  servicePort: 5432
+
+redis:
+  image: redis:7-alpine
+  storage: 1Gi
+  servicePort: 6379
+
+kafka:
+  image: apache/kafka:3.9.0
+  storage: 5Gi
+  brokerPort: 9092
+  controllerPort: 9093
+  clusterID: 5L6g3nShT-eMCtK--X86sw

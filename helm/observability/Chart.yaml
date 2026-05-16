@@ -1,0 +1,24 @@
+apiVersion: v2
+name: observability
+description: Hatch observability umbrella — Prometheus, Loki, Promtail, Tempo, Grafana, Alertmanager, Kafka UI.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: kube-prometheus-stack
+    version: 85.1.2
+    repository: https://prometheus-community.github.io/helm-charts
+    alias: kps
+  - name: loki
+    version: 6.55.0
+    repository: https://grafana.github.io/helm-charts
+  - name: promtail
+    version: 6.17.1
+    repository: https://grafana.github.io/helm-charts
+  - name: tempo
+    version: 1.24.4
+    repository: https://grafana.github.io/helm-charts
+  - name: kafka-ui
+    version: 1.6.4
+    repository: https://kafbat.github.io/helm-charts

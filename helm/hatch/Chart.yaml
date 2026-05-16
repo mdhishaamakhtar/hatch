@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hatch
+description: Hatch — high-scale future email scheduler. Phase 0 ships data infra only (Postgres, Redis, Kafka KRaft). Service templates land in later Build Plan phases.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
