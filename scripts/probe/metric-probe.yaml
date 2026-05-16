@@ -1,0 +1,48 @@
+# In-cluster metric probe. Nginx serves /metrics with a single dummy gauge.
+# The prometheus.io/scrape annotation causes our Prometheus to discover and
+# scrape this pod automatically (see helm/observability/values.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metric-probe-config
+  namespace: hatch
+data:
+  default.conf: |
+    server {
+      listen 80;
+      # Prometheus expects text/plain for the exposition format.
+      default_type "text/plain; version=0.0.4";
+      location = /metrics {
+        return 200 "# HELP hatch_probe_value Synthetic probe — proves Prometheus is scraping.\n# TYPE hatch_probe_value gauge\nhatch_probe_value 1\n";
+      }
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metric-probe
+  namespace: hatch
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: metric-probe
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "80"
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        - name: conf
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+  volumes:
+    - name: conf
+      configMap:
+        name: metric-probe-config
+        items:
+          - key: default.conf
+            path: default.conf

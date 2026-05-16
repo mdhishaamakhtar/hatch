@@ -1,1 +1,83 @@
-# hatch
+# Hatch
+
+General-purpose, high-scale future email scheduler. Schedule emails from 1 hour
+to years in advance.
+
+Stack: Go, PostgreSQL, Kafka (KRaft), bbolt, Redis, pluggable providers.
+
+Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](https://ruby-spectacles-2bc.notion.site/Hatch-34123f950a298115a7cec9d05a4d99f4)
+
+---
+
+## Prerequisites
+
+- Docker Desktop with Kubernetes enabled (Settings → Kubernetes → Enable)
+- `go` ≥ 1.25
+- `helm` ≥ 4 (`brew install helm`)
+- `kubectl` (bundled with Docker Desktop)
+- `golang-migrate` (`brew install golang-migrate`)
+- `sqlc` (`brew install sqlc`)
+- `libpq` for `psql` (`brew install libpq && brew link --force libpq`)
+- `redis` for `redis-cli` (`brew install redis`)
+
+## First-time setup
+
+```sh
+cp .env.example .env       # tweak placeholders if you need to
+make up                    # deploy observability + data infra
+make port-forward          # localhost ports for host tools
+make migrate               # apply DB migrations
+```
+
+## Common commands
+
+| Command | What it does |
+|---|---|
+| `make up` | Inject secrets, install `observability` + `hatch` helm releases |
+| `make down` | Uninstall both releases (PVCs kept) |
+| `make restart` | Tear down, wipe PVCs, redeploy clean |
+| `make port-forward` | Forward Postgres / Redis / Kafka / Grafana / Kafka UI / Prometheus / Loki / Tempo |
+| `make status` | Pod status across both namespaces |
+| `make logs SVC=postgres` | Tail logs for one component |
+| `make migrate` | Apply pending DB migrations |
+| `make migrate-down` | Roll back all migrations |
+| `make sqlc` | Regenerate `gen/` from `queries/` + `migrations/` |
+| `make test` | `go test ./pkg/...` |
+| `make phase0-verify` | Run the full Phase 0 acceptance audit |
+
+## Local URLs (after `make port-forward`)
+
+| Service | URL |
+|---|---|
+| Grafana | http://localhost:3000 (admin / admin) |
+| Kafka UI | http://localhost:8080 |
+| Prometheus | http://localhost:9090 |
+| Loki gateway | http://localhost:3100 |
+| Tempo HTTP | http://localhost:3200 |
+| Postgres | localhost:5432 (user `hatch`, db `hatch`) |
+| Redis | localhost:6379 |
+| Kafka broker | localhost:9092 |
+
+## How the env split works
+
+`.env` has two sections:
+
+- `HOST_*` — `localhost` DSNs used by host tools (`make migrate`, `psql`, `redis-cli`).
+- everything else — ClusterDNS values consumed by in-cluster services.
+
+`scripts/inject-secrets.sh` strips every `HOST_*` key before populating the
+`hatch-secrets` k8s Secret, so services in the cluster never see `localhost`
+values.
+
+## Layout
+
+```
+cmd/         service entrypoints (api, scheduler, delivery-worker, …)
+internal/    service-specific business logic
+pkg/         shared packages (logger, tracer, metrics, config, db, redis, provider)
+migrations/  golang-migrate SQL files
+queries/     sqlc query files
+gen/         generated Go from sqlc
+helm/        helm charts (hatch = data infra, observability = monitoring stack)
+scripts/     port-forward, inject-secrets, phase0-verify, probes
+```

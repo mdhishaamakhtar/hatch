@@ -1,0 +1,180 @@
+# Observability umbrella values. Local-dev profile targets Docker Desktop k8s.
+
+kps:
+  # kube-prometheus-stack — keep the heavy components disabled for local.
+  defaultRules:
+    create: false
+  kubeApiServer:
+    enabled: true
+  kubeControllerManager:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeProxy:
+    enabled: false
+  nodeExporter:
+    enabled: true
+  prometheus:
+    prometheusSpec:
+      # Discover all ServiceMonitors regardless of label selector.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      serviceMonitorSelector: {}
+      serviceMonitorNamespaceSelector: {}
+      podMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelector: {}
+      podMonitorNamespaceSelector: {}
+      ruleSelectorNilUsesHelmValues: false
+      retention: 7d
+      resources:
+        requests:
+          memory: 512Mi
+        limits:
+          memory: 1Gi
+      # Scrape any pod or service annotated with prometheus.io/scrape=true.
+      additionalScrapeConfigs:
+        - job_name: kubernetes-pods
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              action: keep
+              regex: "true"
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+              action: replace
+              target_label: __metrics_path__
+              regex: (.+)
+            - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+              action: replace
+              regex: ([^:]+)(?::\d+)?;(\d+)
+              replacement: $1:$2
+              target_label: __address__
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+              target_label: component
+  alertmanager:
+    alertmanagerSpec:
+      resources:
+        requests:
+          memory: 64Mi
+  grafana:
+    adminUser: admin
+    adminPassword: admin
+    service:
+      type: NodePort
+      nodePort: 30000
+    sidecar:
+      datasources:
+        enabled: true
+      dashboards:
+        enabled: true
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://observability-loki-gateway.observability.svc.cluster.local
+        jsonData:
+          derivedFields:
+            - datasourceUid: tempo
+              matcherRegex: '"trace_id":"(\w+)"'
+              name: TraceID
+              url: '$${__value.raw}'
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        access: proxy
+        url: http://observability-tempo.observability.svc.cluster.local:3100
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            tags: ['service.name']
+
+loki:
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    storage:
+      type: filesystem
+    pattern_ingester:
+      enabled: false
+    limits_config:
+      retention_period: 168h
+      allow_structured_metadata: true
+      volume_enabled: true
+  singleBinary:
+    replicas: 1
+    persistence:
+      size: 5Gi
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  backend:
+    replicas: 0
+  gateway:
+    enabled: true
+    replicas: 1
+  test:
+    enabled: false
+  monitoring:
+    selfMonitoring:
+      enabled: false
+      grafanaAgent:
+        installOperator: false
+    lokiCanary:
+      enabled: false
+
+promtail:
+  config:
+    clients:
+      - url: http://observability-loki-gateway.observability.svc.cluster.local/loki/api/v1/push
+
+tempo:
+  tempo:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+  persistence:
+    enabled: true
+    size: 5Gi
+  service:
+    type: ClusterIP
+
+kafka-ui:
+  yamlApplicationConfig:
+    kafka:
+      clusters:
+        - name: hatch-local
+          bootstrapServers: kafka.hatch.svc.cluster.local:9092
+    auth:
+      type: disabled
+    management:
+      health:
+        ldap:
+          enabled: false
+  service:
+    type: NodePort
+    nodePort: 30080

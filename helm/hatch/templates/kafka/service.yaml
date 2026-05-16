@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: kafka
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: kafka
+  ports:
+    - port: {{ .Values.kafka.brokerPort }}
+      targetPort: broker
+      name: broker
+    - port: {{ .Values.kafka.controllerPort }}
+      targetPort: controller
+      name: controller
