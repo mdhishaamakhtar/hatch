@@ -12,4 +12,5 @@ type Config struct {
 	BcryptCost        int    `env:"BCRYPT_COST"        envDefault:"12"`
 	MaxBodyBytes      int64  `env:"API_MAX_BODY_BYTES" envDefault:"65536"`
 	ShutdownTimeoutMS int    `env:"API_SHUTDOWN_MS"    envDefault:"10000"`
+	APIEnableSwagger  bool   `env:"API_ENABLE_SWAGGER" envDefault:"true"`
 }

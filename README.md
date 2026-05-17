@@ -42,6 +42,7 @@ make migrate               # apply DB migrations
 | `make migrate` | Apply pending DB migrations |
 | `make migrate-down` | Roll back all migrations |
 | `make sqlc` | Regenerate `gen/` from `queries/` + `migrations/` |
+| `make swag-gen` | Regenerate OpenAPI spec under `docs/` from handler annotations |
 | `make test` | `go test ./pkg/...` |
 | `make build-api` | Build the `hatch/api:dev` Docker image |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
@@ -54,6 +55,7 @@ make migrate               # apply DB migrations
 | Service | URL |
 |---|---|
 | Scheduler API | http://localhost:9021 |
+| Swagger UI | http://localhost:9021/swagger/index.html |
 | Grafana | http://localhost:3000 (admin / admin) |
 | Kafka UI | http://localhost:8080 |
 | Prometheus | http://localhost:9090 |

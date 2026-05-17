@@ -29,7 +29,18 @@ type createClientResponse struct {
 	APIKey   string `json:"api_key"`
 }
 
-// POST /admin/clients
+// handleCreateClient provisions a new client and returns the plaintext API key once.
+//
+//	@Summary		Create a client
+//	@Tags			admin
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		createClientRequest	true	"client config"
+//	@Success		201		{object}	createClientResponse
+//	@Failure		400		{object}	apiError
+//	@Failure		401		{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/admin/clients [post]
 func (s *Server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
 	if err != nil {
@@ -92,7 +103,17 @@ func (s *Server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DELETE /admin/clients/{client_id}
+// handleDeleteClient soft-deletes a client and invalidates the Redis cache.
+//
+//	@Summary		Delete a client
+//	@Tags			admin
+//	@Produce		json
+//	@Param			client_id	path	string	true	"client UUID"
+//	@Success		204
+//	@Failure		400	{object}	apiError
+//	@Failure		401	{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/admin/clients/{client_id} [delete]
 func (s *Server) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.parseClientIDParam(w, r, "client_id")
 	if !ok {
@@ -128,7 +149,19 @@ var allowedVendors = map[string]struct{}{
 	"smtp":     {},
 }
 
-// POST /admin/clients/{client_id}/providers
+// handleUpsertProvider attaches or replaces a vendor's Tink-encrypted credentials for a client.
+//
+//	@Summary		Upsert a client provider
+//	@Tags			admin
+//	@Accept			json
+//	@Produce		json
+//	@Param			client_id	path		string					true	"client UUID"
+//	@Param			body		body		upsertProviderRequest	true	"vendor + credentials"
+//	@Success		201			{object}	upsertProviderResponse
+//	@Failure		400			{object}	apiError
+//	@Failure		401			{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/admin/clients/{client_id}/providers [post]
 func (s *Server) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
 	clientID, ok := s.parseClientIDParam(w, r, "client_id")
 	if !ok {
@@ -188,7 +221,18 @@ func (s *Server) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DELETE /admin/clients/{client_id}/providers/{vendor}
+// handleDeleteProvider soft-deletes a vendor row and invalidates the Redis cache.
+//
+//	@Summary		Delete a client provider
+//	@Tags			admin
+//	@Produce		json
+//	@Param			client_id	path	string	true	"client UUID"
+//	@Param			vendor		path	string	true	"vendor (resend|ses|sendgrid|smtp)"
+//	@Success		204
+//	@Failure		400	{object}	apiError
+//	@Failure		401	{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/admin/clients/{client_id}/providers/{vendor} [delete]
 func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	clientID, ok := s.parseClientIDParam(w, r, "client_id")
 	if !ok {

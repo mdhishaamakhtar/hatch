@@ -1,0 +1,398 @@
+basePath: /
+definitions:
+  internal_api.apiError:
+    properties:
+      error:
+        type: string
+      reason:
+        type: string
+    type: object
+  internal_api.createClientRequest:
+    properties:
+      max_rps:
+        type: integer
+      name:
+        type: string
+    type: object
+  internal_api.createClientResponse:
+    properties:
+      api_key:
+        type: string
+      client_id:
+        type: string
+      max_rps:
+        type: integer
+      name:
+        type: string
+    type: object
+  internal_api.createScheduleRequest:
+    properties:
+      body:
+        type: string
+      deliver_at:
+        type: string
+      from_email:
+        type: string
+      from_name:
+        type: string
+      idempotency_key:
+        type: string
+      metadata:
+        items:
+          type: integer
+        type: array
+      recipient_email:
+        type: string
+      subject:
+        type: string
+    type: object
+  internal_api.scheduleFullResponse:
+    properties:
+      body:
+        type: string
+      created_at:
+        type: string
+      deliver_at:
+        type: string
+      failure_reason:
+        type: string
+      from_email:
+        type: string
+      from_name:
+        type: string
+      idempotency_key:
+        type: string
+      last_provider:
+        type: string
+      metadata:
+        items:
+          type: integer
+        type: array
+      recipient_email:
+        type: string
+      retry_count:
+        type: integer
+      schedule_id:
+        type: string
+      status:
+        type: string
+      subject:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  internal_api.scheduleResponse:
+    properties:
+      deliver_at:
+        type: string
+      schedule_id:
+        type: string
+      status:
+        type: string
+    type: object
+  internal_api.upsertProviderRequest:
+    properties:
+      credentials:
+        items:
+          type: integer
+        type: array
+      vendor:
+        type: string
+    type: object
+  internal_api.upsertProviderResponse:
+    properties:
+      client_id:
+        type: string
+      is_active:
+        type: boolean
+      provider_id:
+        type: string
+      vendor:
+        type: string
+    type: object
+host: localhost:9021
+info:
+  contact: {}
+  description: |-
+    Schedule emails for future delivery. Admin endpoints provision
+    clients and per-vendor provider credentials.
+  title: Hatch Scheduler API
+  version: "1.0"
+paths:
+  /admin/clients:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: client config
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createClientRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.createClientResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Create a client
+      tags:
+      - admin
+  /admin/clients/{client_id}:
+    delete:
+      parameters:
+      - description: client UUID
+        in: path
+        name: client_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Delete a client
+      tags:
+      - admin
+  /admin/clients/{client_id}/providers:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: client UUID
+        in: path
+        name: client_id
+        required: true
+        type: string
+      - description: vendor + credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.upsertProviderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.upsertProviderResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Upsert a client provider
+      tags:
+      - admin
+  /admin/clients/{client_id}/providers/{vendor}:
+    delete:
+      parameters:
+      - description: client UUID
+        in: path
+        name: client_id
+        required: true
+        type: string
+      - description: vendor (resend|ses|sendgrid|smtp)
+        in: path
+        name: vendor
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Delete a client provider
+      tags:
+      - admin
+  /healthz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - health
+  /readyz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      summary: Readiness probe (pings Postgres + Redis)
+      tags:
+      - health
+  /v1/schedules:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: schedule payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createScheduleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: idempotent replay
+          schema:
+            $ref: '#/definitions/internal_api.scheduleResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.scheduleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Schedule an email
+      tags:
+      - schedules
+  /v1/schedules/{schedule_id}:
+    delete:
+      parameters:
+      - description: schedule UUID
+        in: path
+        name: schedule_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Cancel a schedule
+      tags:
+      - schedules
+    get:
+      parameters:
+      - description: schedule UUID
+        in: path
+        name: schedule_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.scheduleFullResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.apiError'
+      security:
+      - BearerAuth: []
+      summary: Get a schedule
+      tags:
+      - schedules
+schemes:
+- http
+securityDefinitions:
+  BearerAuth:
+    description: '"Bearer <api_key>" — client key for /v1/*, admin key for /admin/*.'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

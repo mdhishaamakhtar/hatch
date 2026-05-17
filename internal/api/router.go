@@ -9,6 +9,7 @@ import (
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/metrics"
 	"github.com/redis/rueidis"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 )
@@ -48,6 +49,12 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/healthz", healthHandler())
 	r.Get("/readyz", readyHandler(s.pool, s.redis))
 	r.Handle("/metrics", metrics.Handler())
+
+	if s.cfg.APIEnableSwagger {
+		r.Get("/swagger/*", httpSwagger.Handler(
+			httpSwagger.URL("/swagger/doc.json"),
+		))
+	}
 
 	// Client-facing v1.
 	r.Route("/v1", func(r chi.Router) {

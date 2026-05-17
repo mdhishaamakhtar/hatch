@@ -21,8 +21,16 @@ help: ## Show this help
 build: build-api ## Build all Hatch service Docker images
 
 .PHONY: build-api
-build-api: ## Build the scheduler-api Docker image (hatch/api:dev)
+build-api: swag-gen ## Build the scheduler-api Docker image (hatch/api:dev)
 	docker build -f Dockerfile.api -t hatch/api:dev .
+
+.PHONY: swag-gen
+swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
+	go tool swag init \
+	  -g cmd/api/main.go \
+	  -o docs \
+	  --parseInternal \
+	  --parseDependency
 
 .PHONY: run-api
 run-api: ## Run scheduler-api locally against HOST_* DSNs (no k8s)
