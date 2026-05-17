@@ -19,8 +19,6 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 - `sqlc` (`brew install sqlc`)
 - `libpq` for `psql` (`brew install libpq && brew link --force libpq`)
 - `redis` for `redis-cli` (`brew install redis`)
-- `.env` populated with `ADMIN_API_KEY` and a `PROVIDER_CRED_KEY` Tink keyset
-  (generate one via `make gen-provider-key`).
 
 ## First-time setup
 
