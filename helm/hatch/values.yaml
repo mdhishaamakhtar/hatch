@@ -1,8 +1,15 @@
-# Default values for the Hatch chart. Phase 0 deploys only data infra
-# (services are toggled off via services.enabled and become real templates in
-# later Build Plan phases).
-services:
-  enabled: false
+# Default values for the Hatch chart. Phase 0 deployed data infra; Phase 1
+# adds the scheduler-api service. Each Hatch service has its own `enabled`
+# toggle so individual phases can opt in/out independently.
+
+api:
+  enabled: true
+  image: hatch/api:dev
+  imagePullPolicy: IfNotPresent
+  replicas: 1
+  # Hatch services start at port 9021 and walk forward — keeps the 8080/3000
+  # tooling range free and avoids any host-side port remap.
+  servicePort: 9021
 
 postgres:
   image: postgres:17-alpine

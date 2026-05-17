@@ -18,8 +18,22 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build all service Docker images (Phase 0 stub)
-	@echo "Phase 0: no service images yet."
+build: build-api ## Build all Hatch service Docker images
+
+.PHONY: build-api
+build-api: ## Build the scheduler-api Docker image (hatch/api:dev)
+	docker build -f Dockerfile.api -t hatch/api:dev .
+
+.PHONY: run-api
+run-api: ## Run scheduler-api locally against HOST_* DSNs (no k8s)
+	@set -a; . ./.env; set +a; \
+	  DATABASE_URL="$$HOST_DATABASE_URL" REDIS_ADDR="$$HOST_REDIS_ADDR" \
+	  OTLP_ENDPOINT="" \
+	  go run ./cmd/api
+
+.PHONY: gen-provider-key
+gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
+	@go run ./cmd/tinkgen
 
 .PHONY: deps
 deps: ## Pull helm chart dependencies
@@ -87,3 +101,7 @@ test: ## go test ./pkg/...
 .PHONY: phase0-verify
 phase0-verify: ## Run every Phase 0 acceptance check and report
 	@./scripts/phase0-verify.sh
+
+.PHONY: phase1-verify
+phase1-verify: ## Run every Phase 1 acceptance check and report
+	@./scripts/phase1-verify.sh

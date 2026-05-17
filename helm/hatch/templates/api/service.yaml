@@ -1,0 +1,16 @@
+{{- if .Values.api.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    app.kubernetes.io/component: api
+  ports:
+    - port: {{ .Values.api.servicePort }}
+      targetPort: http
+      name: http
+{{- end }}
