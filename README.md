@@ -19,6 +19,8 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 - `sqlc` (`brew install sqlc`)
 - `libpq` for `psql` (`brew install libpq && brew link --force libpq`)
 - `redis` for `redis-cli` (`brew install redis`)
+- `.env` populated with `ADMIN_API_KEY` and a `PROVIDER_CRED_KEY` Tink keyset
+  (generate one via `make gen-provider-key`).
 
 ## First-time setup
 
@@ -43,12 +45,17 @@ make migrate               # apply DB migrations
 | `make migrate-down` | Roll back all migrations |
 | `make sqlc` | Regenerate `gen/` from `queries/` + `migrations/` |
 | `make test` | `go test ./pkg/...` |
+| `make build-api` | Build the `hatch/api:dev` Docker image |
+| `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
+| `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
 | `make phase0-verify` | Run the full Phase 0 acceptance audit |
+| `make phase1-verify` | Run the full Phase 1 acceptance audit (golden path + observability) |
 
 ## Local URLs (after `make port-forward`)
 
 | Service | URL |
 |---|---|
+| Scheduler API | http://localhost:9021 |
 | Grafana | http://localhost:3000 (admin / admin) |
 | Kafka UI | http://localhost:8080 |
 | Prometheus | http://localhost:9090 |
@@ -57,6 +64,10 @@ make migrate               # apply DB migrations
 | Postgres | localhost:5432 (user `hatch`, db `hatch`) |
 | Redis | localhost:6379 |
 | Kafka broker | localhost:9092 |
+
+Hatch service ports start at `9021` and walk forward (9022, 9023, …). This
+keeps the conventional 3000/8080/9090 range free for tooling — no host-side
+remapping is ever needed.
 
 ## How the env split works
 

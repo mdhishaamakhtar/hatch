@@ -14,13 +14,13 @@ import (
 // Email is the payload passed to Send. Mirrors the persisted columns the
 // Delivery Worker hydrates from Postgres.
 type Email struct {
-	ScheduleID      []byte
-	ClientID        []byte
-	RecipientEmail  string
-	FromEmail       string
-	FromName        string
-	Subject         string
-	Body            string
+	ScheduleID     []byte
+	ClientID       []byte
+	RecipientEmail string
+	FromEmail      string
+	FromName       string
+	Subject        string
+	Body           string
 }
 
 // Provider is the interface every vendor implementation satisfies.

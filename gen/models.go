@@ -58,12 +58,13 @@ func (ns NullScheduleStatus) Value() (driver.Value, error) {
 }
 
 type Client struct {
-	ID         []byte             `db:"id" json:"id"`
-	Name       string             `db:"name" json:"name"`
-	ApiKeyHash string             `db:"api_key_hash" json:"api_key_hash"`
-	IsActive   bool               `db:"is_active" json:"is_active"`
-	MaxRps     int32              `db:"max_rps" json:"max_rps"`
-	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ID           []byte             `db:"id" json:"id"`
+	Name         string             `db:"name" json:"name"`
+	ApiKeyHash   string             `db:"api_key_hash" json:"api_key_hash"`
+	IsActive     bool               `db:"is_active" json:"is_active"`
+	MaxRps       int32              `db:"max_rps" json:"max_rps"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ApiKeyLookup []byte             `db:"api_key_lookup" json:"api_key_lookup"`
 }
 
 type ClientProvider struct {

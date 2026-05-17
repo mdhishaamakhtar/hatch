@@ -7,18 +7,22 @@ INSERT INTO scheduled_emails (
 )
 RETURNING id, status, deliver_at, created_at;
 
+-- name: CreateScheduleIdempotency :exec
+INSERT INTO schedule_idempotency (client_id, idempotency_key, schedule_id, deliver_at)
+VALUES ($1, $2, $3, $4);
+
+-- name: GetScheduleIdempotencyByKey :one
+SELECT schedule_id, deliver_at
+FROM schedule_idempotency
+WHERE client_id = $1
+  AND idempotency_key = $2
+LIMIT 1;
+
 -- name: GetScheduleByID :one
 SELECT *
 FROM scheduled_emails
 WHERE id = $1
   AND client_id = $2
-LIMIT 1;
-
--- name: GetScheduleByIdempotencyKey :one
-SELECT *
-FROM scheduled_emails
-WHERE client_id = $1
-  AND idempotency_key = $2
 LIMIT 1;
 
 -- name: CancelSchedule :one
@@ -31,8 +35,8 @@ WHERE id = $1
 RETURNING id, status, updated_at;
 
 -- name: CreateClient :one
-INSERT INTO clients (id, name, api_key_hash, max_rps)
-VALUES ($1, $2, $3, $4)
+INSERT INTO clients (id, name, api_key_lookup, api_key_hash, max_rps)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, name, max_rps, is_active, created_at;
 
 -- name: SoftDeleteClient :exec
@@ -40,10 +44,10 @@ UPDATE clients
 SET is_active = false
 WHERE id = $1;
 
--- name: GetClientByAPIKeyHash :one
-SELECT id, name, max_rps, is_active
+-- name: GetClientByAPIKeyLookup :one
+SELECT id, name, max_rps, is_active, api_key_hash
 FROM clients
-WHERE api_key_hash = $1
+WHERE api_key_lookup = $1
   AND is_active = true
 LIMIT 1;
 

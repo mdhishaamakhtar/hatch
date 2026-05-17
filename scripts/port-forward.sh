@@ -10,6 +10,8 @@ mkdir -p /tmp/hatch-pf
 kubectl -n hatch port-forward svc/postgres 5432:5432 >/tmp/hatch-pf/postgres.log 2>&1 &
 kubectl -n hatch port-forward svc/redis    6379:6379 >/tmp/hatch-pf/redis.log    2>&1 &
 kubectl -n hatch port-forward svc/kafka    9092:9092 >/tmp/hatch-pf/kafka.log    2>&1 &
+# Hatch services live in the 9021+ range.
+kubectl -n hatch port-forward svc/api      9021:9021 >/tmp/hatch-pf/api.log      2>&1 &
 
 # Grafana NodePort 30000 + Kafka UI NodePort 30080 are reachable via
 # docker-desktop's kubernetes service. We also expose them explicitly so the
@@ -26,6 +28,7 @@ echo "Port-forwards started:"
 echo "  Postgres   localhost:5432"
 echo "  Redis      localhost:6379"
 echo "  Kafka      localhost:9092"
+echo "  API        http://localhost:9021"
 echo "  Grafana    http://localhost:3000  (admin/admin)"
 echo "  Kafka UI   http://localhost:8080"
 echo "  Prometheus http://localhost:9090"

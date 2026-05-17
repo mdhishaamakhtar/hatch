@@ -40,16 +40,17 @@ func (q *Queries) CancelSchedule(ctx context.Context, arg CancelScheduleParams) 
 }
 
 const createClient = `-- name: CreateClient :one
-INSERT INTO clients (id, name, api_key_hash, max_rps)
-VALUES ($1, $2, $3, $4)
+INSERT INTO clients (id, name, api_key_lookup, api_key_hash, max_rps)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, name, max_rps, is_active, created_at
 `
 
 type CreateClientParams struct {
-	ID         []byte `db:"id" json:"id"`
-	Name       string `db:"name" json:"name"`
-	ApiKeyHash string `db:"api_key_hash" json:"api_key_hash"`
-	MaxRps     int32  `db:"max_rps" json:"max_rps"`
+	ID           []byte `db:"id" json:"id"`
+	Name         string `db:"name" json:"name"`
+	ApiKeyLookup []byte `db:"api_key_lookup" json:"api_key_lookup"`
+	ApiKeyHash   string `db:"api_key_hash" json:"api_key_hash"`
+	MaxRps       int32  `db:"max_rps" json:"max_rps"`
 }
 
 type CreateClientRow struct {
@@ -64,6 +65,7 @@ func (q *Queries) CreateClient(ctx context.Context, arg CreateClientParams) (Cre
 	row := q.db.QueryRow(ctx, createClient,
 		arg.ID,
 		arg.Name,
+		arg.ApiKeyLookup,
 		arg.ApiKeyHash,
 		arg.MaxRps,
 	)
@@ -131,29 +133,53 @@ func (q *Queries) CreateSchedule(ctx context.Context, arg CreateScheduleParams) 
 	return i, err
 }
 
-const getClientByAPIKeyHash = `-- name: GetClientByAPIKeyHash :one
-SELECT id, name, max_rps, is_active
+const createScheduleIdempotency = `-- name: CreateScheduleIdempotency :exec
+INSERT INTO schedule_idempotency (client_id, idempotency_key, schedule_id, deliver_at)
+VALUES ($1, $2, $3, $4)
+`
+
+type CreateScheduleIdempotencyParams struct {
+	ClientID       []byte             `db:"client_id" json:"client_id"`
+	IdempotencyKey string             `db:"idempotency_key" json:"idempotency_key"`
+	ScheduleID     []byte             `db:"schedule_id" json:"schedule_id"`
+	DeliverAt      pgtype.Timestamptz `db:"deliver_at" json:"deliver_at"`
+}
+
+func (q *Queries) CreateScheduleIdempotency(ctx context.Context, arg CreateScheduleIdempotencyParams) error {
+	_, err := q.db.Exec(ctx, createScheduleIdempotency,
+		arg.ClientID,
+		arg.IdempotencyKey,
+		arg.ScheduleID,
+		arg.DeliverAt,
+	)
+	return err
+}
+
+const getClientByAPIKeyLookup = `-- name: GetClientByAPIKeyLookup :one
+SELECT id, name, max_rps, is_active, api_key_hash
 FROM clients
-WHERE api_key_hash = $1
+WHERE api_key_lookup = $1
   AND is_active = true
 LIMIT 1
 `
 
-type GetClientByAPIKeyHashRow struct {
-	ID       []byte `db:"id" json:"id"`
-	Name     string `db:"name" json:"name"`
-	MaxRps   int32  `db:"max_rps" json:"max_rps"`
-	IsActive bool   `db:"is_active" json:"is_active"`
+type GetClientByAPIKeyLookupRow struct {
+	ID         []byte `db:"id" json:"id"`
+	Name       string `db:"name" json:"name"`
+	MaxRps     int32  `db:"max_rps" json:"max_rps"`
+	IsActive   bool   `db:"is_active" json:"is_active"`
+	ApiKeyHash string `db:"api_key_hash" json:"api_key_hash"`
 }
 
-func (q *Queries) GetClientByAPIKeyHash(ctx context.Context, apiKeyHash string) (GetClientByAPIKeyHashRow, error) {
-	row := q.db.QueryRow(ctx, getClientByAPIKeyHash, apiKeyHash)
-	var i GetClientByAPIKeyHashRow
+func (q *Queries) GetClientByAPIKeyLookup(ctx context.Context, apiKeyLookup []byte) (GetClientByAPIKeyLookupRow, error) {
+	row := q.db.QueryRow(ctx, getClientByAPIKeyLookup, apiKeyLookup)
+	var i GetClientByAPIKeyLookupRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.MaxRps,
 		&i.IsActive,
+		&i.ApiKeyHash,
 	)
 	return i, err
 }
@@ -195,40 +221,28 @@ func (q *Queries) GetScheduleByID(ctx context.Context, arg GetScheduleByIDParams
 	return i, err
 }
 
-const getScheduleByIdempotencyKey = `-- name: GetScheduleByIdempotencyKey :one
-SELECT id, client_id, idempotency_key, deliver_at, status, recipient_email, from_email, from_name, subject, body, metadata, retry_count, last_provider, failure_reason, created_at, updated_at
-FROM scheduled_emails
+const getScheduleIdempotencyByKey = `-- name: GetScheduleIdempotencyByKey :one
+SELECT schedule_id, deliver_at
+FROM schedule_idempotency
 WHERE client_id = $1
   AND idempotency_key = $2
 LIMIT 1
 `
 
-type GetScheduleByIdempotencyKeyParams struct {
-	ClientID       []byte  `db:"client_id" json:"client_id"`
-	IdempotencyKey *string `db:"idempotency_key" json:"idempotency_key"`
+type GetScheduleIdempotencyByKeyParams struct {
+	ClientID       []byte `db:"client_id" json:"client_id"`
+	IdempotencyKey string `db:"idempotency_key" json:"idempotency_key"`
 }
 
-func (q *Queries) GetScheduleByIdempotencyKey(ctx context.Context, arg GetScheduleByIdempotencyKeyParams) (ScheduledEmail, error) {
-	row := q.db.QueryRow(ctx, getScheduleByIdempotencyKey, arg.ClientID, arg.IdempotencyKey)
-	var i ScheduledEmail
-	err := row.Scan(
-		&i.ID,
-		&i.ClientID,
-		&i.IdempotencyKey,
-		&i.DeliverAt,
-		&i.Status,
-		&i.RecipientEmail,
-		&i.FromEmail,
-		&i.FromName,
-		&i.Subject,
-		&i.Body,
-		&i.Metadata,
-		&i.RetryCount,
-		&i.LastProvider,
-		&i.FailureReason,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
+type GetScheduleIdempotencyByKeyRow struct {
+	ScheduleID []byte             `db:"schedule_id" json:"schedule_id"`
+	DeliverAt  pgtype.Timestamptz `db:"deliver_at" json:"deliver_at"`
+}
+
+func (q *Queries) GetScheduleIdempotencyByKey(ctx context.Context, arg GetScheduleIdempotencyByKeyParams) (GetScheduleIdempotencyByKeyRow, error) {
+	row := q.db.QueryRow(ctx, getScheduleIdempotencyByKey, arg.ClientID, arg.IdempotencyKey)
+	var i GetScheduleIdempotencyByKeyRow
+	err := row.Scan(&i.ScheduleID, &i.DeliverAt)
 	return i, err
 }
 
