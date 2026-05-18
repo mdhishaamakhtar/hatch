@@ -21,8 +21,11 @@ help: ## Show this help
 build: build-api ## Build all Hatch service Docker images
 
 .PHONY: build-api
-build-api: swag-gen ## Build the scheduler-api Docker image (hatch/api:dev)
-	docker build -f Dockerfile.api -t hatch/api:dev .
+build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.api -t hatch/api:$$TAG -t hatch/api:dev . && \
+	  echo $$TAG > .api-image-tag && \
+	  echo "→ tagged: hatch/api:$$TAG (also hatch/api:dev)"
 
 .PHONY: swag-gen
 swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
@@ -53,9 +56,12 @@ up: deps ## Inject secrets, deploy observability + hatch (data infra only)
 	$(HELM) upgrade --install observability ./helm/observability \
 	  --namespace $(NS_OBS) --create-namespace \
 	  --wait --timeout 10m
-	$(HELM) upgrade --install hatch ./helm/hatch \
-	  --namespace $(NS_HATCH) --create-namespace \
-	  --wait --timeout 5m
+	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
+	  echo "→ deploying api with hatch/api:$$API_TAG"; \
+	  $(HELM) upgrade --install hatch ./helm/hatch \
+	    --namespace $(NS_HATCH) --create-namespace \
+	    --set api.image=hatch/api:$$API_TAG \
+	    --wait --timeout 5m
 	@echo
 	@echo "Stack up. Port-forward with: make port-forward"
 
