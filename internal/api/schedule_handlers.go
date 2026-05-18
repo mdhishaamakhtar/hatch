@@ -59,7 +59,22 @@ type scheduleFullResponse struct {
 	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
-// POST /v1/schedules
+// handleCreateSchedule enqueues an email for future delivery. Honors Idempotency-Key.
+//
+//	@Summary		Schedule an email
+//	@Tags			schedules
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		createScheduleRequest	true	"schedule payload"
+//	@Success		201		{object}	scheduleResponse
+//	@Success		200		{object}	scheduleResponse	"idempotent replay"
+//	@Failure		400		{object}	apiError
+//	@Failure		401		{object}	apiError
+//	@Failure		413		{object}	apiError
+//	@Failure		415		{object}	apiError
+//	@Failure		429		{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/v1/schedules [post]
 func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	clientID, ok := ClientIDFromCtx(r.Context())
 	if !ok {
@@ -243,7 +258,18 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /v1/schedules/{schedule_id}
+// handleGetSchedule fetches a single schedule the caller owns.
+//
+//	@Summary		Get a schedule
+//	@Tags			schedules
+//	@Produce		json
+//	@Param			schedule_id	path		string	true	"schedule UUID"
+//	@Success		200			{object}	scheduleFullResponse
+//	@Failure		400			{object}	apiError
+//	@Failure		401			{object}	apiError
+//	@Failure		404			{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/v1/schedules/{schedule_id} [get]
 func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	clientID, ok := ClientIDFromCtx(r.Context())
 	if !ok {
@@ -270,7 +296,19 @@ func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toFullResponse(row))
 }
 
-// DELETE /v1/schedules/{schedule_id}
+// handleCancelSchedule cancels a pending schedule. 409 if already in a terminal state.
+//
+//	@Summary		Cancel a schedule
+//	@Tags			schedules
+//	@Produce		json
+//	@Param			schedule_id	path	string	true	"schedule UUID"
+//	@Success		204
+//	@Failure		400	{object}	apiError
+//	@Failure		401	{object}	apiError
+//	@Failure		404	{object}	apiError
+//	@Failure		409	{object}	apiError
+//	@Security		BearerAuth
+//	@Router			/v1/schedules/{schedule_id} [delete]
 func (s *Server) handleCancelSchedule(w http.ResponseWriter, r *http.Request) {
 	clientID, ok := ClientIDFromCtx(r.Context())
 	if !ok {

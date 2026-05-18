@@ -42,8 +42,9 @@ make migrate               # apply DB migrations
 | `make migrate` | Apply pending DB migrations |
 | `make migrate-down` | Roll back all migrations |
 | `make sqlc` | Regenerate `gen/` from `queries/` + `migrations/` |
+| `make swag-gen` | Regenerate OpenAPI spec under `docs/` from handler annotations |
 | `make test` | `go test ./pkg/...` |
-| `make build-api` | Build the `hatch/api:dev` Docker image |
+| `make build-api` | Build the scheduler-api image (unique `hatch/api:dev-<ts>` tag + `:dev` alias) |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
 | `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
 | `make phase0-verify` | Run the full Phase 0 acceptance audit |
@@ -54,6 +55,7 @@ make migrate               # apply DB migrations
 | Service | URL |
 |---|---|
 | Scheduler API | http://localhost:9021 |
+| Swagger UI | http://localhost:9021/swagger/index.html |
 | Grafana | http://localhost:3000 (admin / admin) |
 | Kafka UI | http://localhost:8080 |
 | Prometheus | http://localhost:9090 |
@@ -66,6 +68,19 @@ make migrate               # apply DB migrations
 Hatch service ports start at `9021` and walk forward (9022, 9023, …). This
 keeps the conventional 3000/8080/9090 range free for tooling — no host-side
 remapping is ever needed.
+
+## How the image flow works
+
+`make build-api` produces a fresh `hatch/api:dev-<unix-ts>` image (and also
+tags it as `hatch/api:dev` for convenience). The unique tag is written to
+`.api-image-tag`; `make up` reads it and deploys that exact tag via
+`helm --set api.image=...`. Pods run with `imagePullPolicy: Always`.
+
+The unique tag matters because Docker Desktop's daemon image store and k8s'
+containerd image store are separate — a floating `:dev` tag binding sticks to
+whichever blob containerd cached first and rebuilds don't update k8s' view.
+Pinning to a unique tag forces kubelet to resolve a new image binding on
+every deploy.
 
 ## How the env split works
 

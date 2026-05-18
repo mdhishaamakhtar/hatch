@@ -10,10 +10,16 @@ import (
 )
 
 // healthHandler always returns 200 — liveness only checks the process.
+//
+//	@Summary	Liveness probe
+//	@Tags		health
+//	@Produce	json
+//	@Success	200	{object}	map[string]string
+//	@Router		/healthz [get]
 func healthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok here!"}`))
 	}
 }
 
@@ -21,6 +27,13 @@ func healthHandler() http.HandlerFunc {
 // either flips readiness to 503 so k8s removes the pod from the service
 // endpoints — the process keeps running so its /metrics endpoint stays
 // scrapable through the outage.
+//
+//	@Summary	Readiness probe (pings Postgres + Redis)
+//	@Tags		health
+//	@Produce	json
+//	@Success	200	{object}	map[string]string
+//	@Failure	503	{object}	apiError
+//	@Router		/readyz [get]
 func readyHandler(pool *pgxpool.Pool, rc rueidis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)

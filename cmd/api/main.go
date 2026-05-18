@@ -1,5 +1,18 @@
 // scheduler-api — Hatch Phase 1 service. Handles client schedule CRUD and
 // admin client/provider provisioning. See internal/api for handler details.
+//
+//	@title			Hatch Scheduler API
+//	@version		1.0
+//	@description	Schedule emails for future delivery. Admin endpoints provision
+//	@description	clients and per-vendor provider credentials.
+//	@host			localhost:9021
+//	@BasePath		/
+//	@schemes		http
+//
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				"Bearer <api_key>" — client key for /v1/*, admin key for /admin/*.
 package main
 
 import (
@@ -13,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/mdhishaamakhtar/hatch/docs"
 	"github.com/mdhishaamakhtar/hatch/internal/api"
 	"github.com/mdhishaamakhtar/hatch/pkg/config"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"

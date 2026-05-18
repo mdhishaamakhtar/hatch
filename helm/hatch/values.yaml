@@ -5,7 +5,7 @@
 api:
   enabled: true
   image: hatch/api:dev
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   replicas: 1
   # Hatch services start at port 9021 and walk forward — keeps the 8080/3000
   # tooling range free and avoids any host-side port remap.
