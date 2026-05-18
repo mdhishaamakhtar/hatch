@@ -488,7 +488,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "deliver_at": {
-                    "type": "string"
+                    "type": "integer"
                 },
                 "from_email": {
                     "type": "string"
@@ -523,7 +523,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "deliver_at": {
-                    "type": "string"
+                    "type": "integer"
                 },
                 "failure_reason": {
                     "type": "string"
@@ -570,7 +570,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "deliver_at": {
-                    "type": "string"
+                    "type": "integer"
                 },
                 "schedule_id": {
                     "type": "string"

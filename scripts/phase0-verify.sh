@@ -8,10 +8,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 FAILS=0
+PROBES_STARTED=0
 
 pass() { printf "  [PASS] %s\n" "$1"; }
 fail() { printf "  [FAIL] %s\n" "$1"; FAILS=$((FAILS + 1)); }
 section() { printf "\n== %s ==\n" "$1"; }
+
+cleanup_probes() {
+  [[ "$PROBES_STARTED" == "1" ]] || return 0
+  kubectl -n hatch delete --ignore-not-found pod metric-probe log-probe >/dev/null 2>&1 || true
+  kubectl -n hatch delete --ignore-not-found job trace-probe             >/dev/null 2>&1 || true
+  kubectl -n hatch delete --ignore-not-found configmap metric-probe-config >/dev/null 2>&1 || true
+}
+trap cleanup_probes EXIT
 
 # ---------- Step 1 — Go ----------
 section "Step 1 — Go module + shared packages"
@@ -99,6 +108,7 @@ section "Probe round-trips (in-cluster producers)"
 
 # Apply probes (idempotent). Skip if --skip-probes passed.
 if [[ "${1:-}" != "--skip-probes" ]]; then
+  PROBES_STARTED=1
   if ./scripts/probe/run.sh >/tmp/p0-probes.log 2>&1; then
     pass "probe pods applied + ready"
   else
@@ -166,10 +176,10 @@ section "Step 3 — migrations"
 DB_URL="${HOST_DATABASE_URL:-postgres://hatch:hatchpass@localhost:5432/hatch?sslmode=disable}"
 
 mig_version=$(migrate -path migrations -database "$DB_URL" version 2>&1 | tail -1)
-if [[ "$mig_version" == "4" ]]; then
-  pass "migrate at version 4 (all 4 migrations applied)"
+if [[ "$mig_version" == "5" ]]; then
+  pass "migrate at version 5 (all 5 migrations applied)"
 else
-  fail "migrate version = '$mig_version', want 4"
+  fail "migrate version = '$mig_version', want 5"
 fi
 
 partitions=$(psql "$DB_URL" -tAc "SELECT count(*) FROM pg_inherits WHERE inhparent = 'scheduled_emails'::regclass" 2>/dev/null || echo 0)

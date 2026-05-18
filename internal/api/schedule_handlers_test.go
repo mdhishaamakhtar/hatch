@@ -6,8 +6,8 @@ import (
 )
 
 func TestValidateCreateSchedule(t *testing.T) {
-	future := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
-	near := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	future := time.Now().Add(2 * time.Hour).UnixMilli()
+	near := time.Now().Add(30 * time.Minute).UnixMilli()
 	base := createScheduleRequest{
 		DeliverAt:      future,
 		RecipientEmail: "to@example.com",
@@ -22,8 +22,8 @@ func TestValidateCreateSchedule(t *testing.T) {
 		want string
 	}{
 		{"ok", func(*createScheduleRequest) {}, ""},
-		{"deliver_at empty", func(r *createScheduleRequest) { r.DeliverAt = "" }, "deliver_at_required"},
-		{"deliver_at malformed", func(r *createScheduleRequest) { r.DeliverAt = "not-a-date" }, "deliver_at_format"},
+		{"deliver_at zero", func(r *createScheduleRequest) { r.DeliverAt = 0 }, "deliver_at_required"},
+		{"deliver_at negative", func(r *createScheduleRequest) { r.DeliverAt = -1 }, "deliver_at_format"},
 		{"deliver_at too soon", func(r *createScheduleRequest) { r.DeliverAt = near }, "deliver_at_too_soon"},
 		{"recipient invalid", func(r *createScheduleRequest) { r.RecipientEmail = "nope" }, "recipient_email_invalid"},
 		{"from invalid", func(r *createScheduleRequest) { r.FromEmail = "nope" }, "from_email_invalid"},
