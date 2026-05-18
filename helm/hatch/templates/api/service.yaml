@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/part-of: hatch
     app.kubernetes.io/component: api
 spec:
+  type: {{ .Values.api.serviceType | default "ClusterIP" }}
   selector:
     app.kubernetes.io/component: api
   ports:

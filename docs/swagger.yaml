@@ -30,7 +30,7 @@ definitions:
       body:
         type: string
       deliver_at:
-        type: string
+        type: integer
       from_email:
         type: string
       from_name:
@@ -53,7 +53,7 @@ definitions:
       created_at:
         type: string
       deliver_at:
-        type: string
+        type: integer
       failure_reason:
         type: string
       from_email:
@@ -84,7 +84,7 @@ definitions:
   internal_api.scheduleResponse:
     properties:
       deliver_at:
-        type: string
+        type: integer
       schedule_id:
         type: string
       status:

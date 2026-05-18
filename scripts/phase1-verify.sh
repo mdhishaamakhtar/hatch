@@ -156,11 +156,11 @@ else
 fi
 
 # 6) POST /v1/schedules with idempotency key.
-deliver_at=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+deliver_at=$(python3 -c "import datetime; print(int((datetime.datetime.now(datetime.UTC)+datetime.timedelta(hours=2)).timestamp()*1000))")
 sched_payload=$(python3 -c "
 import json,sys
 print(json.dumps({
-  'deliver_at': '$deliver_at',
+  'deliver_at': $deliver_at,
   'recipient_email': 'recipient@example.com',
   'from_email': 'from@example.com',
   'from_name': 'Phase1 Verify',

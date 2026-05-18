@@ -65,8 +65,8 @@ kps:
     adminUser: admin
     adminPassword: admin
     service:
-      type: NodePort
-      nodePort: 30000
+      type: LoadBalancer
+      port: 3000
     sidecar:
       datasources:
         enabled: true

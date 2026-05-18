@@ -25,7 +25,7 @@ import (
 const minScheduleHorizon = time.Hour
 
 type createScheduleRequest struct {
-	DeliverAt      string          `json:"deliver_at"`
+	DeliverAt      int64           `json:"deliver_at"`
 	RecipientEmail string          `json:"recipient_email"`
 	FromEmail      string          `json:"from_email"`
 	FromName       string          `json:"from_name,omitempty"`
@@ -36,15 +36,15 @@ type createScheduleRequest struct {
 }
 
 type scheduleResponse struct {
-	ScheduleID string    `json:"schedule_id"`
-	Status     string    `json:"status"`
-	DeliverAt  time.Time `json:"deliver_at"`
+	ScheduleID string `json:"schedule_id"`
+	Status     string `json:"status"`
+	DeliverAt  int64  `json:"deliver_at"`
 }
 
 type scheduleFullResponse struct {
 	ScheduleID     string          `json:"schedule_id"`
 	Status         string          `json:"status"`
-	DeliverAt      time.Time       `json:"deliver_at"`
+	DeliverAt      int64           `json:"deliver_at"`
 	RecipientEmail string          `json:"recipient_email"`
 	FromEmail      string          `json:"from_email"`
 	FromName       string          `json:"from_name,omitempty"`
@@ -110,7 +110,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, reason)
 		return
 	}
-	deliverAt, _ := time.Parse(time.RFC3339, in.DeliverAt)
+	deliverAt := time.UnixMilli(in.DeliverAt)
 
 	// Active providers gate.
 	provs, err := s.queries.ListClientActiveProviders(r.Context(), hdb.UUIDToBytes(clientID))
@@ -142,7 +142,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, scheduleResponse{
 				ScheduleID: scheduleID.String(),
 				Status:     "pending",
-				DeliverAt:  row.DeliverAt.Time,
+				DeliverAt:  row.DeliverAt.Time.UnixMilli(),
 			})
 			return
 		}
@@ -231,7 +231,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, scheduleResponse{
 					ScheduleID: existingID.String(),
 					Status:     "pending",
-					DeliverAt:  existing.DeliverAt.Time,
+					DeliverAt:  existing.DeliverAt.Time.UnixMilli(),
 				})
 				return
 			}
@@ -254,7 +254,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, scheduleResponse{
 		ScheduleID: scheduleID.String(),
 		Status:     string(row.Status),
-		DeliverAt:  row.DeliverAt.Time,
+		DeliverAt:  row.DeliverAt.Time.UnixMilli(),
 	})
 }
 
@@ -355,13 +355,13 @@ func parseScheduleIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bo
 }
 
 func validateCreateSchedule(in createScheduleRequest) string {
-	if in.DeliverAt == "" {
+	if in.DeliverAt == 0 {
 		return "deliver_at_required"
 	}
-	deliverAt, err := time.Parse(time.RFC3339, in.DeliverAt)
-	if err != nil {
+	if in.DeliverAt < 0 {
 		return "deliver_at_format"
 	}
+	deliverAt := time.UnixMilli(in.DeliverAt)
 	if time.Until(deliverAt) < minScheduleHorizon {
 		return "deliver_at_too_soon"
 	}
@@ -409,7 +409,7 @@ func toFullResponse(row gen.ScheduledEmail) scheduleFullResponse {
 	resp := scheduleFullResponse{
 		ScheduleID:     scheduleID.String(),
 		Status:         string(row.Status),
-		DeliverAt:      row.DeliverAt.Time,
+		DeliverAt:      row.DeliverAt.Time.UnixMilli(),
 		RecipientEmail: row.RecipientEmail,
 		FromEmail:      row.FromEmail,
 		Subject:        row.Subject,

@@ -25,9 +25,12 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 ```sh
 cp .env.example .env       # tweak placeholders if you need to
 make up                    # deploy observability + data infra
-make port-forward          # localhost ports for host tools
+make port-forward          # localhost ports for Postgres / Redis / Kafka / etc.
 make migrate               # apply DB migrations
 ```
+
+The scheduler API and Grafana are exposed via `Service type=LoadBalancer` and
+are reachable on `localhost:9021` and `localhost:3000` without `port-forward`.
 
 ## Common commands
 
@@ -36,7 +39,7 @@ make migrate               # apply DB migrations
 | `make up` | Inject secrets, install `observability` + `hatch` helm releases |
 | `make down` | Uninstall both releases (PVCs kept) |
 | `make restart` | Tear down, wipe PVCs, redeploy clean |
-| `make port-forward` | Forward Postgres / Redis / Kafka / Grafana / Kafka UI / Prometheus / Loki / Tempo |
+| `make port-forward` | Forward Postgres / Redis / Kafka / Kafka UI / Prometheus / Loki / Tempo |
 | `make status` | Pod status across both namespaces |
 | `make logs SVC=postgres` | Tail logs for one component |
 | `make migrate` | Apply pending DB migrations |
@@ -50,13 +53,20 @@ make migrate               # apply DB migrations
 | `make phase0-verify` | Run the full Phase 0 acceptance audit |
 | `make phase1-verify` | Run the full Phase 1 acceptance audit (golden path + observability) |
 
-## Local URLs (after `make port-forward`)
+## Local URLs
+
+Always reachable (LoadBalancer, no port-forward needed):
 
 | Service | URL |
 |---|---|
 | Scheduler API | http://localhost:9021 |
 | Swagger UI | http://localhost:9021/swagger/index.html |
 | Grafana | http://localhost:3000 (admin / admin) |
+
+Reachable after `make port-forward`:
+
+| Service | URL |
+|---|---|
 | Kafka UI | http://localhost:8080 |
 | Prometheus | http://localhost:9090 |
 | Loki gateway | http://localhost:3100 |
@@ -68,6 +78,15 @@ make migrate               # apply DB migrations
 Hatch service ports start at `9021` and walk forward (9022, 9023, …). This
 keeps the conventional 3000/8080/9090 range free for tooling — no host-side
 remapping is ever needed.
+
+## API timestamp format
+
+`deliver_at` on every schedule request and response is an int64 of
+milliseconds since the Unix epoch (UTC). Validation:
+
+- `0` or missing → `deliver_at_required`
+- negative → `deliver_at_format`
+- less than 1 hour in the future → `deliver_at_too_soon`
 
 ## How the image flow works
 
