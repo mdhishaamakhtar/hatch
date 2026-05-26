@@ -51,11 +51,8 @@ deps: ## Pull helm chart dependencies
 	cd helm/observability && $(HELM) dependency update
 
 .PHONY: up
-up: deps ## Inject secrets, deploy observability + hatch (data infra only)
+up: ## Deploy hatch (app stack: postgres/kafka/redis/api). Assumes obs is already up.
 	@./scripts/inject-secrets.sh
-	$(HELM) upgrade --install observability ./helm/observability \
-	  --namespace $(NS_OBS) --create-namespace \
-	  --wait --timeout 10m
 	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
 	  echo "→ deploying api with hatch/api:$$API_TAG"; \
 	  $(HELM) upgrade --install hatch ./helm/hatch \
@@ -63,7 +60,39 @@ up: deps ## Inject secrets, deploy observability + hatch (data infra only)
 	    --set api.image=hatch/api:$$API_TAG \
 	    --wait --timeout 5m
 	@echo
-	@echo "Stack up. Port-forward with: make port-forward"
+	@echo "Hatch up. Port-forward with: make port-forward"
+
+.PHONY: down
+down: pf-stop ## Tear down hatch helm release (keeps PVCs, leaves obs running)
+	-$(HELM) uninstall hatch -n $(NS_HATCH)
+
+.PHONY: restart
+restart: ## Restart hatch only (down + up, keeps PVCs and obs)
+	$(MAKE) down
+	$(MAKE) up
+
+.PHONY: up-obs
+up-obs: deps ## Deploy observability stack (grafana/prom/loki/tempo)
+	$(HELM) upgrade --install observability ./helm/observability \
+	  --namespace $(NS_OBS) --create-namespace \
+	  --wait --timeout 10m
+
+.PHONY: down-obs
+down-obs: ## Tear down observability helm release (keeps PVCs)
+	-$(HELM) uninstall observability -n $(NS_OBS)
+
+.PHONY: up-all
+up-all: up-obs up ## First-time setup: deploy obs then hatch
+
+.PHONY: down-all
+down-all: down down-obs ## Tear down both helm releases (keeps PVCs)
+
+.PHONY: reset
+reset: ## Nuclear option: tear down everything, wipe PVCs, redeploy clean
+	$(MAKE) down-all
+	-$(KUBECTL) -n $(NS_HATCH) delete pvc --all
+	-$(KUBECTL) -n $(NS_OBS) delete pvc --all
+	$(MAKE) up-all
 
 .PHONY: port-forward
 port-forward: ## Start port-forwards in the background
@@ -72,18 +101,6 @@ port-forward: ## Start port-forwards in the background
 .PHONY: pf-stop
 pf-stop: ## Stop any running kubectl port-forward processes
 	-pkill -f "kubectl port-forward" || true
-
-.PHONY: down
-down: pf-stop ## Tear down helm releases (keeps PVCs)
-	-$(HELM) uninstall hatch -n $(NS_HATCH)
-	-$(HELM) uninstall observability -n $(NS_OBS)
-
-.PHONY: restart
-restart: ## Tear down, wipe PVCs, bring stack back up clean
-	$(MAKE) down
-	-$(KUBECTL) -n $(NS_HATCH) delete pvc --all
-	-$(KUBECTL) -n $(NS_OBS) delete pvc --all
-	$(MAKE) up
 
 .PHONY: status
 status: ## Show pod status across both namespaces

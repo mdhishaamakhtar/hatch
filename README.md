@@ -24,7 +24,7 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 
 ```sh
 cp .env.example .env       # tweak placeholders if you need to
-make up                    # deploy observability + data infra
+make up-all                # deploy observability + hatch
 make port-forward          # localhost ports for Postgres / Redis / Kafka / etc.
 make migrate               # apply DB migrations
 ```
@@ -32,13 +32,27 @@ make migrate               # apply DB migrations
 The scheduler API and Grafana are exposed via `Service type=LoadBalancer` and
 are reachable on `localhost:9021` and `localhost:3000` without `port-forward`.
 
+## Lifecycle
+
+`observability` is infra — deploy it once and leave it. `hatch` is the app
+stack (postgres/kafka/redis/api) you iterate on; `up` / `down` / `restart`
+target it specifically so observability isn't torn down on every cycle.
+
+| Command | Scope | What it does |
+|---|---|---|
+| `make up` | hatch | Inject secrets, install/upgrade `hatch` (assumes obs is up) |
+| `make down` | hatch | Uninstall `hatch` (PVCs kept, obs untouched) |
+| `make restart` | hatch | `down` + `up`, keeps PVCs and obs |
+| `make up-obs` | obs | Install/upgrade `observability` |
+| `make down-obs` | obs | Uninstall `observability` (PVCs kept) |
+| `make up-all` | both | First-time: obs then hatch |
+| `make down-all` | both | Uninstall both releases (PVCs kept) |
+| `make reset` | both | Nuclear: tear down both, wipe PVCs, redeploy clean |
+
 ## Common commands
 
 | Command | What it does |
 |---|---|
-| `make up` | Inject secrets, install `observability` + `hatch` helm releases |
-| `make down` | Uninstall both releases (PVCs kept) |
-| `make restart` | Tear down, wipe PVCs, redeploy clean |
 | `make port-forward` | Forward Postgres / Redis / Kafka / Kafka UI / Prometheus / Loki / Tempo |
 | `make status` | Pod status across both namespaces |
 | `make logs SVC=postgres` | Tail logs for one component |
