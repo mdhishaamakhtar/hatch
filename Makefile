@@ -18,7 +18,7 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: build-api ## Build all Hatch service Docker images
+build: build-api build-scheduler ## Build all Hatch service Docker images
 
 .PHONY: build-api
 build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
@@ -26,6 +26,13 @@ build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
 	  docker build -f Dockerfile.api -t hatch/api:$$TAG -t hatch/api:dev . && \
 	  echo $$TAG > .api-image-tag && \
 	  echo "→ tagged: hatch/api:$$TAG (also hatch/api:dev)"
+
+.PHONY: build-scheduler
+build-scheduler: ## Build the scheduler-service Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.scheduler -t hatch/scheduler:$$TAG -t hatch/scheduler:dev . && \
+	  echo $$TAG > .scheduler-image-tag && \
+	  echo "→ tagged: hatch/scheduler:$$TAG (also hatch/scheduler:dev)"
 
 .PHONY: swag-gen
 swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
@@ -42,6 +49,16 @@ run-api: ## Run scheduler-api locally against HOST_* DSNs (no k8s)
 	  OTLP_ENDPOINT="" \
 	  go run ./cmd/api
 
+.PHONY: run-scheduler
+run-scheduler: ## Run scheduler-service locally against HOST_* DSNs (single pod)
+	@set -a; . ./.env; set +a; \
+	  DATABASE_URL="$$HOST_DATABASE_URL" \
+	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
+	  POD_INDEX=0 TOTAL_PODS=1 \
+	  SCHEDULER_WHEEL_DB_PATH="$${SCHEDULER_WHEEL_DB_PATH:-./.local-wheel.db}" \
+	  OTLP_ENDPOINT="" \
+	  go run ./cmd/scheduler
+
 .PHONY: gen-provider-key
 gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
 	@go run ./cmd/tinkgen
@@ -51,13 +68,15 @@ deps: ## Pull helm chart dependencies
 	cd helm/observability && $(HELM) dependency update
 
 .PHONY: up
-up: ## Deploy hatch (app stack: postgres/kafka/redis/api). Assumes obs is already up.
+up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs is already up.
 	@./scripts/inject-secrets.sh
 	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
-	  echo "→ deploying api with hatch/api:$$API_TAG"; \
+	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
+	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG"; \
 	  $(HELM) upgrade --install hatch ./helm/hatch \
 	    --namespace $(NS_HATCH) --create-namespace \
 	    --set api.image=hatch/api:$$API_TAG \
+	    --set scheduler.image=hatch/scheduler:$$SCHED_TAG \
 	    --wait --timeout 5m
 	@echo
 	@echo "Hatch up. Port-forward with: make port-forward"
@@ -126,8 +145,8 @@ sqlc: ## Regenerate Go from queries via sqlc
 	sqlc generate
 
 .PHONY: test
-test: ## go test ./pkg/...
-	go test ./pkg/...
+test: ## Run all unit tests under -race
+	go test -race ./pkg/... ./internal/...
 
 .PHONY: phase0-verify
 phase0-verify: ## Run every Phase 0 acceptance check and report
@@ -136,3 +155,7 @@ phase0-verify: ## Run every Phase 0 acceptance check and report
 .PHONY: phase1-verify
 phase1-verify: ## Run every Phase 1 acceptance check and report
 	@./scripts/phase1-verify.sh
+
+.PHONY: phase2-verify
+phase2-verify: ## Run every Phase 2 acceptance check and report
+	@./scripts/phase2-verify.sh

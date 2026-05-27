@@ -1,0 +1,60 @@
+{{- if .Values.kafka.topics }}
+# Provision every topic listed under .Values.kafka.topics. Idempotent thanks to
+# --if-not-exists, so re-running `make up` is safe. Phase 4 will extend the
+# list with the three retry tiers.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics-bootstrap
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: kafka-topics
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: hatch
+        app.kubernetes.io/component: kafka-topics
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-topics
+          image: {{ .Values.kafka.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              BROKER="kafka.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.kafka.brokerPort }}"
+
+              echo "waiting for broker $BROKER to accept connections…"
+              for i in $(seq 1 60); do
+                if /opt/kafka/bin/kafka-broker-api-versions.sh \
+                     --bootstrap-server "$BROKER" >/dev/null 2>&1; then
+                  echo "  broker reachable after $i attempt(s)"
+                  break
+                fi
+                sleep 2
+                if [ "$i" = "60" ]; then
+                  echo "  broker never became reachable" >&2
+                  exit 1
+                fi
+              done
+
+              {{- range .Values.kafka.topics }}
+              echo "ensuring topic {{ .name }} (partitions={{ .partitions }}, rf={{ .replicationFactor }})"
+              /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server "$BROKER" \
+                --create --if-not-exists \
+                --topic "{{ .name }}" \
+                --partitions {{ .partitions }} \
+                --replication-factor {{ .replicationFactor }}
+              {{- end }}
+
+              echo "done."
+{{- end }}

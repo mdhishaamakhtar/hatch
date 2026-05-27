@@ -1,5 +1,4 @@
-# Default values for the Hatch chart. Phase 0 deployed data infra; Phase 1
-# adds the scheduler-api service. Each Hatch service has its own `enabled`
+# Default values for the Hatch chart. Each Hatch service has its own `enabled`
 # toggle so individual phases can opt in/out independently.
 
 api:
@@ -9,6 +8,17 @@ api:
   replicas: 1
   servicePort: 9021
   serviceType: LoadBalancer
+
+scheduler:
+  enabled: true
+  image: hatch/scheduler:dev
+  imagePullPolicy: Always
+  replicas: 2
+  adminPort: 9022
+  scheduleChannelBuffer: 100000
+  clearChannelBuffer: 64
+  wheelStorage:
+    size: 1Gi
 
 postgres:
   image: postgres:17-alpine
@@ -28,3 +38,9 @@ kafka:
   brokerPort: 9092
   controllerPort: 9093
   clusterID: 5L6g3nShT-eMCtK--X86sw
+  # Topics provisioned by the post-install/post-upgrade Job. Phase 4 extends
+  # this list with the retry tiers (emails.retry.1min/5min/30min).
+  topics:
+    - name: emails.due
+      partitions: 12
+      replicationFactor: 1

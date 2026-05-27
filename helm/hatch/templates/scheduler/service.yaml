@@ -1,0 +1,21 @@
+{{- if .Values.scheduler.enabled }}
+# Headless service so each StatefulSet pod gets a stable DNS name
+# (scheduler-0.scheduler.hatch.svc.cluster.local, scheduler-1.scheduler…).
+# /internal/wheel/* is reached via those per-pod names; there is no client
+# load-balancing requirement.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: scheduler
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: scheduler
+  ports:
+    - port: {{ .Values.scheduler.adminPort }}
+      targetPort: admin
+      name: admin
+{{- end }}
