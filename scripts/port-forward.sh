@@ -14,6 +14,13 @@ kubectl -n hatch port-forward svc/postgres 5432:5432 >/tmp/hatch-pf/postgres.log
 kubectl -n hatch port-forward svc/redis    6379:6379 >/tmp/hatch-pf/redis.log    2>&1 &
 kubectl -n hatch port-forward svc/kafka    9092:9092 >/tmp/hatch-pf/kafka.log    2>&1 &
 
+# Scheduler admin: one local port per pod (headless service has no
+# cluster-IP). Ports walk forward from 9022 — scheduler-0 → 9022, scheduler-1
+# → 9023. If the StatefulSet hasn't rolled out yet, the per-pod forwards fail
+# silently into their log files, which is fine.
+kubectl -n hatch port-forward pod/scheduler-0 9022:9022 >/tmp/hatch-pf/scheduler-0.log 2>&1 &
+kubectl -n hatch port-forward pod/scheduler-1 9023:9022 >/tmp/hatch-pf/scheduler-1.log 2>&1 &
+
 # Kafka UI keeps its NodePort (30080) + a port-forward so acceptance checks
 # can hit localhost:8080 consistently.
 kubectl -n observability port-forward svc/observability-kafka-ui 8080:80 >/tmp/hatch-pf/kafka-ui.log 2>&1 &
@@ -28,8 +35,10 @@ echo "  API        http://localhost:9021"
 echo "  Grafana    http://localhost:3000  (admin/admin)"
 echo
 echo "Port-forwards started:"
-echo "  Postgres   localhost:5432"
-echo "  Redis      localhost:6379"
-echo "  Kafka      localhost:9092"
-echo "  Kafka UI   http://localhost:8080"
-echo "  Prometheus http://localhost:9090"
+echo "  Postgres     localhost:5432"
+echo "  Redis        localhost:6379"
+echo "  Kafka        localhost:9092"
+echo "  Scheduler-0  http://localhost:9022"
+echo "  Scheduler-1  http://localhost:9023"
+echo "  Kafka UI     http://localhost:8080"
+echo "  Prometheus   http://localhost:9090"

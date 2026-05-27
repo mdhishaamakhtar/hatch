@@ -40,7 +40,7 @@ func TestValidateCreateSchedule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := base
 			tc.mut(&in)
-			got := validateCreateSchedule(in)
+			got := validateCreateSchedule(in, time.Hour)
 			if got != tc.want {
 				t.Fatalf("validateCreateSchedule: got %q want %q", got, tc.want)
 			}

@@ -22,7 +22,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const minScheduleHorizon = time.Hour
 
 type createScheduleRequest struct {
 	DeliverAt      int64           `json:"deliver_at"`
@@ -104,7 +103,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Validate.
-	if reason := validateCreateSchedule(in); reason != "" {
+	if reason := validateCreateSchedule(in, s.cfg.MinScheduleHorizon); reason != "" {
 		s.bumpValidation(reason)
 		lg.Warn("Validation failure", zap.String("reason", reason))
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, reason)
@@ -354,7 +353,7 @@ func parseScheduleIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bo
 	return id, true
 }
 
-func validateCreateSchedule(in createScheduleRequest) string {
+func validateCreateSchedule(in createScheduleRequest, minHorizon time.Duration) string {
 	if in.DeliverAt == 0 {
 		return "deliver_at_required"
 	}
@@ -362,7 +361,7 @@ func validateCreateSchedule(in createScheduleRequest) string {
 		return "deliver_at_format"
 	}
 	deliverAt := time.UnixMilli(in.DeliverAt)
-	if time.Until(deliverAt) < minScheduleHorizon {
+	if time.Until(deliverAt) < minHorizon {
 		return "deliver_at_too_soon"
 	}
 	if _, err := mail.ParseAddress(in.RecipientEmail); err != nil {
