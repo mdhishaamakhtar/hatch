@@ -16,7 +16,7 @@ SELECT id, deliver_at
 FROM scheduled_emails
 WHERE deliver_at BETWEEN now() AND now() + interval '1 hour'
   AND status = 'pending'
-  AND ('x' || encode(substr(id, 1, 4), 'hex'))::bit(32)::int % $1::int = $2::int
+  AND ((hashtextextended(encode(id, 'hex'), 0) & 2147483647) % $1::int) = $2::int
 `
 
 type PollHourWindowParams struct {

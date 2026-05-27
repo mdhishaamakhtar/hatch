@@ -150,14 +150,14 @@ section "Step 5 — schedule emails via /v1/schedules (both shards)"
 EXPECTED_FILE=$(mktemp)
 trap 'cleanup; rm -f "$EXPECTED_FILE"' EXIT
 
-# Post all 20 schedules first. deliver_at = now+300s (5 min) gives a wide
+# Post all 20 schedules first. deliver_at = now+150s (2.5 min) gives a wide
 # window: the rollout restart takes ~60s, endpoint wait ~15s, leaving ~225s
 # between pods-ready and actual firing — plenty of time for both shards to
 # appear in total_loaded before the slot drains.
-# 300s is safely past the 2m API_MIN_SCHEDULE_HORIZON and well within the
+# 150s is safely past the 2m API_MIN_SCHEDULE_HORIZON and well within the
 # PollHourWindow 1h ceiling.
 POSTED=0
-deliver_at=$(python3 -c "import datetime; print(int((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=300)).timestamp()*1000))")
+deliver_at=$(python3 -c "import datetime; print(int((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=150)).timestamp()*1000))")
 for i in $(seq 1 20); do
   payload=$(python3 -c "
 import json
@@ -183,7 +183,7 @@ print(json.dumps({
   echo "$sid" >> "$EXPECTED_FILE"
   POSTED=$((POSTED + 1))
 done
-echo "  posted $POSTED schedules (deliver_at = now+120s)"
+echo "  posted $POSTED schedules (deliver_at = now+150s)"
 
 # Restart the scheduler StatefulSet so the fresh startup-poll (fires
 # immediately on boot) picks up the rows we just created. Without this the
