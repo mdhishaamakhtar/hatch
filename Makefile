@@ -77,6 +77,7 @@ deps: ## Pull helm chart dependencies
 .PHONY: up
 up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs is already up.
 	@./scripts/inject-secrets.sh
+	@./scripts/sync-migrations.sh
 	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
 	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
 	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG"; \
