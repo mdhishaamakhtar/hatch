@@ -66,14 +66,20 @@ hardcoded. New value: `initWait.image: busybox:1.36`.
 
 ### Part 2 — Separate `db-migrate` Helm hook job
 
-Two new templates under `helm/hatch/templates/migrations/`:
+**Migration SQL delivery (out-of-band ConfigMap).** Helm's `.Files` cannot read
+files outside the chart directory (`helm/hatch/`) and forbids `..` traversal, so
+it cannot package the repo-root `migrations/*.sql`. Instead — mirroring the
+existing `scripts/inject-secrets.sh`, which creates the `hatch-secrets` Secret
+out-of-band before `helm upgrade` — a new `scripts/sync-migrations.sh` creates a
+`hatch-migrations` ConfigMap from `migrations/*.sql` (single source of truth, no
+copy/drift) in the `hatch` namespace. The Makefile `up` target runs it right
+after `inject-secrets.sh` and before `helm upgrade`. The migrate job mounts this
+ConfigMap at `/migrations`. The job uses the public `migrate/migrate` image, so
+nothing needs building or loading into the cluster image store.
 
-1. **`configmap.yaml`** — migration SQL packaged from disk via
-   `{{ (.Files.Glob "migrations/*.sql").AsConfig | indent 2 }}`, mounted at
-   `/migrations`. Regenerated on every `helm upgrade`, so it always matches the
-   repo's `migrations/` directory.
+One new template under `helm/hatch/templates/migrations/`:
 
-2. **`job.yaml`** — a `post-install,post-upgrade` Helm hook:
+1. **`job.yaml`** — a `post-install,post-upgrade` Helm hook:
    - `helm.sh/hook-weight: "0"` (runs before the kafka-topics job at weight 5).
    - `helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded`
      (re-created and re-run idempotently on each `make up`).
@@ -83,6 +89,7 @@ Two new templates under `helm/hatch/templates/migrations/`:
    - Command: a short `/bin/sh` retry loop around
      `migrate -path /migrations -database "$DATABASE_URL" up` (golang-migrate
      tracks applied versions, so `up` is a no-op when already current).
+   - Mounts the out-of-band `hatch-migrations` ConfigMap at `/migrations`.
    - `backoffLimit`, `ttlSecondsAfterFinished`, `restartPolicy: OnFailure`
      mirror the existing kafka-topics-bootstrap job.
 
@@ -96,8 +103,8 @@ initWait:
   image: busybox:1.36
 ```
 
-The job is gated on `.Values.migrations.enabled` (the configmap too), matching
-the per-service `enabled` toggle convention.
+The job is gated on `.Values.migrations.enabled`, matching the per-service
+`enabled` toggle convention.
 
 ### Ordering & why this is safe
 
@@ -129,13 +136,14 @@ on `helm --wait` (app-ready).
   with no manual port-forward / `make migrate`.
 - `make up` on an existing cluster re-runs the migrate hook as a clean no-op.
 - `helm template ./helm/hatch` renders valid manifests for the new init
-  containers, configmap, and job.
+  containers and the migrate job.
 
 ## Files touched
 
 - `helm/hatch/templates/api/deployment.yaml` (add initContainers)
 - `helm/hatch/templates/scheduler/statefulset.yaml` (add initContainers)
-- `helm/hatch/templates/migrations/configmap.yaml` (new)
+- `scripts/sync-migrations.sh` (new — out-of-band hatch-migrations ConfigMap)
 - `helm/hatch/templates/migrations/job.yaml` (new)
 - `helm/hatch/values.yaml` (add `migrations`, `initWait`)
+- `Makefile` (`up` target runs sync-migrations.sh before `helm upgrade`)
 - `README.md`, `BUILD_STATUS.md` (docs upkeep)
