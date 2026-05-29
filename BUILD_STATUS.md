@@ -17,3 +17,7 @@ Verification is a single cumulative audit: `make verify` runs a host prelude
 (build/vet/test/sqlc + pod status) then an in-cluster Job that checks
 everything built so far over ClusterDNS. New phases append checks to
 `internal/verify` rather than adding per-phase scripts.
+
+Bring-up gates app pods on dependency readiness via init containers (no startup
+CrashLoopBackOff), and DB migrations run in-cluster via the `db-migrate`
+post-install/post-upgrade hook — no host-side port-forward required.
