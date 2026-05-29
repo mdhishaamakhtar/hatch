@@ -12,3 +12,8 @@ Next up: **Phase 3 — Delivery Workers**
 | 4 | Retry Consumers (3 tier consumers + instrumentation) | ⏸ pending |
 | 5 | Reconciliation + Partition Archival crons | ⏸ pending |
 | 6 | Grafana dashboards + Alertmanager wiring | ⏸ pending |
+
+Verification is a single cumulative audit: `make verify` runs a host prelude
+(build/vet/test/sqlc + pod status) then an in-cluster Job that checks
+everything built so far over ClusterDNS. New phases append checks to
+`internal/verify` rather than adding per-phase scripts.

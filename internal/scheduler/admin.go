@@ -20,16 +20,19 @@ import (
 // The 3 goroutines run independently and only share the wheel + pool/producer
 // they need — Server is just the HTTP face.
 type Server struct {
-	cfg      Config
-	lg       *zap.Logger
-	pool     *pgxpool.Pool
-	wheel    *Wheel
-	storeOK  func() bool // bbolt readiness probe (always true once Open returns).
-	producer MessageProducer
+	cfg         Config
+	lg          *zap.Logger
+	pool        *pgxpool.Pool
+	wheel       *Wheel
+	storeOK     func() bool // bbolt readiness probe (always true once Open returns).
+	producer    MessageProducer
+	pollTrigger chan<- struct{} // signals the poller goroutine to run an out-of-band poll.
 }
 
 // NewServer wires the admin/observability HTTP surface. Long-lived dependencies
-// (pool, producer, wheel, store) are passed in by main.
+// (pool, producer, wheel, store) are passed in by main. pollTrigger is the
+// out-of-band poll signal channel shared with RunPoller; a nil channel makes
+// POST /internal/poll a no-op (used by tests).
 func NewServer(
 	cfg Config,
 	lg *zap.Logger,
@@ -37,14 +40,16 @@ func NewServer(
 	wheel *Wheel,
 	storeOK func() bool,
 	producer MessageProducer,
+	pollTrigger chan<- struct{},
 ) *Server {
 	return &Server{
-		cfg:      cfg,
-		lg:       lg,
-		pool:     pool,
-		wheel:    wheel,
-		storeOK:  storeOK,
-		producer: producer,
+		cfg:         cfg,
+		lg:          lg,
+		pool:        pool,
+		wheel:       wheel,
+		storeOK:     storeOK,
+		producer:    producer,
+		pollTrigger: pollTrigger,
 	}
 }
 
@@ -60,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 
 	r.Route("/internal", func(r chi.Router) {
 		r.Use(adminAuth(s.cfg.AdminAPIKey))
+		r.Post("/poll", s.handlePoll)
 		r.Get("/wheel/stats", s.handleStats)
 		r.Get("/wheel/slots", s.handleSlots)
 		r.Get("/wheel/slots/{mm}/{ss}", s.handleSlot)
@@ -94,6 +100,21 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ready"}`))
+}
+
+// handlePoll triggers an immediate, out-of-band poll cycle on this pod — the
+// same code path as the hourly tick. Used by tooling (e.g. verification) to
+// make the wheel pick up freshly-created rows without waiting for the next
+// interval or restarting the pod. The send is non-blocking: if a poll is
+// already queued the signal coalesces. Returns 202 regardless.
+func (s *Server) handlePoll(w http.ResponseWriter, _ *http.Request) {
+	select {
+	case s.pollTrigger <- struct{}{}:
+		s.lg.Info("manual poll triggered", zap.Int("pod_index", s.cfg.PodIndex))
+	default:
+		// A poll is already pending (or no trigger is wired) — coalesce.
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "poll_triggered"})
 }
 
 type wheelStats struct {

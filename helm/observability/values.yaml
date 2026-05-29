@@ -176,5 +176,7 @@ kafka-ui:
         ldap:
           enabled: false
   service:
-    type: NodePort
-    nodePort: 30080
+    # LoadBalancer so Kafka UI is always-on at localhost:8080 (Docker Desktop
+    # binds LB services to localhost), matching Grafana/API — no port-forward.
+    type: LoadBalancer
+    port: 8080

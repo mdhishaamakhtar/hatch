@@ -116,14 +116,17 @@ func run(lg *zap.Logger) error {
 
 	schedC := make(chan scheduler.Entry, cfg.ScheduleChannelBuffer)
 	clearC := make(chan string, cfg.ClearChannelBuffer)
+	// Buffered so the admin handler's non-blocking send always lands a pending
+	// poll even if the poller is mid-cycle.
+	pollTrigger := make(chan struct{}, 1)
 
 	scheduler.RecordPodIdentity(cfg.PodIndex, cfg.TotalPods)
 
-	go scheduler.RunPoller(ctx, lg, cfg, queries, schedC, tr, nil)
+	go scheduler.RunPoller(ctx, lg, cfg, queries, schedC, tr, nil, pollTrigger)
 	go scheduler.RunBuilder(ctx, lg, schedC, clearC, wheel, store, cfg.PodIndex, tr)
 	go scheduler.RunTicker(ctx, lg, wheel, clearC, producer, cfg.PodIndex, tr, nil, nil)
 
-	srv := scheduler.NewServer(cfg, lg, pool, wheel, func() bool { return true }, producer)
+	srv := scheduler.NewServer(cfg, lg, pool, wheel, func() bool { return true }, producer, pollTrigger)
 	httpServer := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.AdminPort),
 		Handler:           srv.Handler(),

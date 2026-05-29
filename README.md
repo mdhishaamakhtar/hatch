@@ -53,7 +53,7 @@ target it specifically so observability isn't torn down on every cycle.
 
 | Command | What it does |
 |---|---|
-| `make port-forward` | Forward Postgres / Redis / Kafka / Kafka UI / Prometheus / Loki / Tempo |
+| `make port-forward` | Forward Postgres / Redis / Kafka for host tools (`make migrate` and ad-hoc debugging) |
 | `make status` | Pod status across both namespaces |
 | `make logs SVC=postgres` | Tail logs for one component |
 | `make migrate` | Apply pending DB migrations |
@@ -63,13 +63,12 @@ target it specifically so observability isn't torn down on every cycle.
 | `make test` | `go test -race ./pkg/... ./internal/...` |
 | `make build-api` | Build the scheduler-api image (unique `hatch/api:dev-<ts>` tag + `:dev` alias) |
 | `make build-scheduler` | Build the scheduler-service image (unique `hatch/scheduler:dev-<ts>` tag + `:dev` alias) |
+| `make build-verify` | Build the in-cluster verify image (unique `hatch/verify:dev-<ts>` tag + `:dev` alias) |
 | `make build` | Build every service image |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
 | `make run-scheduler` | Run the scheduler-service locally as a single shard (`POD_INDEX=0 TOTAL_PODS=1`) |
 | `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
-| `make phase0-verify` | Run the full Phase 0 acceptance audit |
-| `make phase1-verify` | Run the full Phase 1 acceptance audit (golden path + observability) |
-| `make phase2-verify` | Run the full Phase 2 acceptance audit (API-driven schedule → wheel → Kafka, offset-safe consumer) |
+| `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → observability round-trips |
 
 ## Local URLs
 
@@ -80,33 +79,31 @@ Always reachable (LoadBalancer, no port-forward needed):
 | Scheduler API | http://localhost:9021 |
 | Swagger UI | http://localhost:9021/swagger/index.html |
 | Grafana | http://localhost:3000 (admin / admin) |
+| Kafka UI | http://localhost:8080 |
 
-Reachable after `make port-forward`:
+Reachable after `make port-forward` (host tools / ad-hoc debugging):
 
 | Service | URL |
 |---|---|
-| Scheduler-0 admin | http://localhost:9022 |
-| Scheduler-1 admin | http://localhost:9023 |
-| Kafka UI | http://localhost:8080 |
-| Prometheus | http://localhost:9090 |
-| Loki gateway | http://localhost:3100 |
-| Tempo HTTP | http://localhost:3200 |
 | Postgres | localhost:5432 (user `hatch`, db `hatch`) |
 | Redis | localhost:6379 |
 | Kafka broker | localhost:9092 |
 
 The scheduler-service runs as a 2-replica StatefulSet behind a *headless*
-service, so each pod gets its own local port (one per pod, walking forward
-from `9022`). Hit them directly:
+service. Inside the cluster each pod has a stable per-pod DNS name
+(`scheduler-0.scheduler.hatch.svc.cluster.local:9022`,
+`scheduler-1…`), which is how `make verify` reaches each shard's
+`/internal/wheel/stats` — no port-forward. For ad-hoc host access to one pod's
+admin API, forward it directly:
 
 ```sh
+kubectl -n hatch port-forward pod/scheduler-0 9022:9022
 curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9022/internal/wheel/stats
-curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9023/internal/wheel/stats
 ```
 
-Hatch service ports start at `9021` and walk forward (9022 = scheduler-0
-admin, 9023 = scheduler-1 admin). This keeps the conventional 3000/8080/9090
-range free for tooling — no host-side remapping is ever needed.
+Hatch service ports start at `9021` and walk forward (9022 = scheduler admin
+port). This keeps the conventional 3000/8080/9090 range free for tooling — no
+host-side remapping is ever needed.
 
 ## API timestamp format
 
@@ -123,7 +120,9 @@ milliseconds since the Unix epoch (UTC). Validation:
 tags it as `hatch/api:dev` for convenience). The unique tag is written to
 `.api-image-tag`; `make up` reads it and deploys that exact tag via
 `helm --set api.image=...`. The same applies to `make build-scheduler`
-(`.scheduler-image-tag`, `helm --set scheduler.image=...`). Pods run with
+(`.scheduler-image-tag`, `helm --set scheduler.image=...`) and to
+`make build-verify` (`hatch/verify:dev-<ts>`, `.verify-image-tag`), which
+`make verify` builds per-run and substitutes into the verify Job. Pods run with
 `imagePullPolicy: Always`.
 
 The unique tag matters because Docker Desktop's daemon image store and k8s'
@@ -172,12 +171,12 @@ Admin endpoints (Bearer `$ADMIN_API_KEY`):
 ## Layout
 
 ```
-cmd/         service entrypoints (api, scheduler, delivery-worker, …)
-internal/    service-specific business logic
+cmd/         service entrypoints (api, scheduler, delivery-worker, verify, …)
+internal/    service-specific business logic (incl. verify = in-cluster acceptance auditor)
 pkg/         shared packages (logger, tracer, metrics, config, db, redis, kafka, wheelstore, provider)
 migrations/  golang-migrate SQL files
 queries/     sqlc query files
 gen/         generated Go from sqlc
 helm/        helm charts (hatch = data infra + services, observability = monitoring stack)
-scripts/     port-forward, inject-secrets, phaseN-verify, probes
+scripts/     port-forward, inject-secrets, verify (+ verify-job.yaml manifest)
 ```

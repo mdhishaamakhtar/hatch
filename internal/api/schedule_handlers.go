@@ -22,7 +22,6 @@ import (
 	"go.uber.org/zap"
 )
 
-
 type createScheduleRequest struct {
 	DeliverAt      int64           `json:"deliver_at"`
 	RecipientEmail string          `json:"recipient_email"`
