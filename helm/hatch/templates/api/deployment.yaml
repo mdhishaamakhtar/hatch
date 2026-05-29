@@ -21,6 +21,24 @@ spec:
         prometheus.io/path: "/metrics"
         prometheus.io/port: {{ .Values.api.servicePort | quote }}
     spec:
+      # Block startup until dependencies accept connections. The app pings
+      # Postgres and dials Redis eagerly at boot (db.NewPool / rueidis.NewClient)
+      # and Fatal-exits on failure, so without this it CrashLoopBackOffs while
+      # racing its own dependencies on every bring-up.
+      initContainers:
+        - name: wait-for-deps
+          image: {{ .Values.initWait.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for dep in "postgres {{ .Values.postgres.servicePort }}" "redis {{ .Values.redis.servicePort }}"; do
+                set -- $dep
+                until nc -w 2 "$1" "$2" </dev/null 2>/dev/null; do
+                  echo "waiting for $1:$2…"
+                  sleep 2
+                done
+                echo "$1:$2 reachable"
+              done
       containers:
         - name: api
           image: {{ .Values.api.image | quote }}
