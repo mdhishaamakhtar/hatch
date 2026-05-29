@@ -35,6 +35,27 @@ func NewProducer(brokers []string, lg *zap.Logger) (*kgo.Client, error) {
 	return cl, nil
 }
 
+// NewConsumer dials the broker list and returns a kgo.Client bound to a
+// consumer group reading the given topics from the earliest offset with
+// auto-commit disabled. This is the throwaway-group shape the verifier uses to
+// drain a topic without persisting offsets or depending on prior group state;
+// callers pass a unique, disposable group id. Caller owns the returned client
+// and must Close() it.
+func NewConsumer(brokers []string, group string, topics []string, lg *zap.Logger) (*kgo.Client, error) {
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumerGroup(group),
+		kgo.ConsumeTopics(topics...),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.DisableAutoCommit(),
+		kgo.WithLogger(kzap{lg: lg}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kafka consumer: %w", err)
+	}
+	return cl, nil
+}
+
 // kzap adapts *zap.Logger to franz-go's kgo.Logger interface so franz-go's
 // internal messages land in Loki with the same JSON shape as the rest of the
 // service's logs.

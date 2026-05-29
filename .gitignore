@@ -39,6 +39,7 @@ helm/*/charts/
 helm/*/*.tgz
 .api-image-tag
 .scheduler-image-tag
+.verify-image-tag
 
 # Built binaries (produced by go build ./...)
 /api

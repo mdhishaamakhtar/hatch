@@ -1,0 +1,30 @@
+# In-cluster acceptance verifier. Runs the cumulative Hatch audit from inside
+# the cluster so every dependency is reached over ClusterDNS — no port-forwards.
+# Applied by scripts/verify.sh with ${VERIFY_IMAGE} substituted to the unique
+# tag built that run. envFrom pulls ADMIN_API_KEY / DATABASE_URL / REDIS_ADDR /
+# KAFKA_BROKERS / LOKI_ENDPOINT from the same Secret the services use.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hatch-verify
+  namespace: hatch
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: verify
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: hatch
+        app.kubernetes.io/component: verify
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: ${VERIFY_IMAGE}
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: hatch-secrets

@@ -45,7 +45,7 @@ func TestPollerForwardsRowsToChannel(t *testing.T) {
 	tick := make(chan time.Time)
 	done := make(chan struct{})
 	go func() {
-		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick)
+		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick, nil)
 		close(done)
 	}()
 
@@ -88,7 +88,7 @@ func TestPollerDropsOnFullChannel(t *testing.T) {
 	tick := make(chan time.Time)
 	done := make(chan struct{})
 	go func() {
-		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick)
+		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick, nil)
 		close(done)
 	}()
 
@@ -113,7 +113,7 @@ func TestPollerTickerFiresMultipleCycles(t *testing.T) {
 	tick := make(chan time.Time, 4)
 	done := make(chan struct{})
 	go func() {
-		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick)
+		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick, nil)
 		close(done)
 	}()
 
@@ -129,6 +129,34 @@ func TestPollerTickerFiresMultipleCycles(t *testing.T) {
 
 	if pollerHits(p) < 3 {
 		t.Fatalf("expected ≥3 poll cycles, got %d", pollerHits(p))
+	}
+}
+
+func TestPollerTriggerFiresPoll(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	p := &fakePoller{rows: nil} // no rows; just count poll cycles
+	out := make(chan Entry, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+	trigger := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		RunPoller(ctx, zap.NewNop(), Config{PodIndex: 0, TotalPods: 1}, p, out, tracer, tick, trigger)
+		close(done)
+	}()
+
+	// Startup poll is hit #1. An out-of-band trigger should drive hit #2
+	// without any tick.
+	trigger <- struct{}{}
+	for i := 0; i < 50 && pollerHits(p) < 2; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if pollerHits(p) < 2 {
+		t.Fatalf("expected ≥2 poll cycles after trigger, got %d", pollerHits(p))
 	}
 }
 

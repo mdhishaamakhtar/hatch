@@ -32,6 +32,10 @@ func RecordPodIdentity(podIndex, totalPods int) { recordPodIdentity(podIndex, to
 //
 // tickC, if non-nil, replaces the internal ticker. Used by tests to drive
 // poll cycles deterministically without a real time.Ticker.
+//
+// triggerC fires an out-of-band poll on demand (the POST /internal/poll admin
+// endpoint sends on it). A nil triggerC simply never fires, so callers that
+// don't wire one — and tests — are unaffected.
 func RunPoller(
 	ctx context.Context,
 	lg *zap.Logger,
@@ -40,6 +44,7 @@ func RunPoller(
 	out chan<- Entry,
 	tracer trace.Tracer,
 	tickC <-chan time.Time,
+	triggerC <-chan struct{},
 ) {
 	if tickC == nil {
 		t := time.NewTicker(cfg.PollInterval)
@@ -55,6 +60,8 @@ func RunPoller(
 		case <-ctx.Done():
 			return
 		case <-tickC:
+			pollOnce(ctx, lg, cfg, q, out, tracer)
+		case <-triggerC:
 			pollOnce(ctx, lg, cfg, q, out, tracer)
 		}
 	}

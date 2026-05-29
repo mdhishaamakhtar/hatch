@@ -34,6 +34,13 @@ build-scheduler: ## Build the scheduler-service Docker image with a unique tag
 	  echo $$TAG > .scheduler-image-tag && \
 	  echo "→ tagged: hatch/scheduler:$$TAG (also hatch/scheduler:dev)"
 
+.PHONY: build-verify
+build-verify: ## Build the in-cluster verify Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.verify -t hatch/verify:$$TAG -t hatch/verify:dev . && \
+	  echo $$TAG > .verify-image-tag && \
+	  echo "→ tagged: hatch/verify:$$TAG (also hatch/verify:dev)"
+
 .PHONY: swag-gen
 swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
 	go tool swag init \
@@ -148,14 +155,6 @@ sqlc: ## Regenerate Go from queries via sqlc
 test: ## Run all unit tests under -race
 	go test -race ./pkg/... ./internal/...
 
-.PHONY: phase0-verify
-phase0-verify: ## Run every Phase 0 acceptance check and report
-	@./scripts/phase0-verify.sh
-
-.PHONY: phase1-verify
-phase1-verify: ## Run every Phase 1 acceptance check and report
-	@./scripts/phase1-verify.sh
-
-.PHONY: phase2-verify
-phase2-verify: ## Run every Phase 2 acceptance check and report
-	@./scripts/phase2-verify.sh
+.PHONY: verify
+verify: ## Run the full cumulative acceptance audit (host prelude + in-cluster Job)
+	@./scripts/verify.sh

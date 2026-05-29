@@ -21,7 +21,7 @@ func makeID(b byte) [16]byte {
 func newTestServer() (*scheduler.Server, *scheduler.Wheel) {
 	w := scheduler.NewWheel()
 	cfg := scheduler.Config{PodIndex: 0, TotalPods: 2, AdminAPIKey: "test-admin"}
-	srv := scheduler.NewServer(cfg, zap.NewNop(), nil, w, func() bool { return true }, nil)
+	srv := scheduler.NewServer(cfg, zap.NewNop(), nil, w, func() bool { return true }, nil, nil)
 	return srv, w
 }
 
@@ -69,6 +69,37 @@ func TestStatsReportsWheelState(t *testing.T) {
 	}
 	if body.PodIndex != 0 || body.TotalPods != 2 || body.OccupiedSlots != 1 || body.TotalLoaded != 2 {
 		t.Fatalf("unexpected stats: %+v", body)
+	}
+}
+
+func TestPollTriggersAndReturns202(t *testing.T) {
+	w := scheduler.NewWheel()
+	cfg := scheduler.Config{PodIndex: 0, TotalPods: 2, AdminAPIKey: "test-admin"}
+	trigger := make(chan struct{}, 1)
+	srv := scheduler.NewServer(cfg, zap.NewNop(), nil, w, func() bool { return true }, nil, trigger)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/internal/poll", nil)
+	req.Header.Set("Authorization", "Bearer test-admin")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-trigger:
+	default:
+		t.Fatal("expected a poll signal on the trigger channel")
+	}
+}
+
+func TestPollWithoutTriggerStillReturns202(t *testing.T) {
+	srv, _ := newTestServer() // nil trigger channel
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/internal/poll", nil)
+	req.Header.Set("Authorization", "Bearer test-admin")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rr.Code)
 	}
 }
 
