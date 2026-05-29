@@ -23,6 +23,23 @@ spec:
         prometheus.io/path: "/metrics"
         prometheus.io/port: {{ .Values.scheduler.adminPort | quote }}
     spec:
+      # Block startup until dependencies accept connections. Postgres is the
+      # boot-crash source (db.NewPool pings and Fatal-exits); kafka is the
+      # produce target, waited on to avoid noisy produce errors at boot.
+      initContainers:
+        - name: wait-for-deps
+          image: {{ .Values.initWait.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for dep in "postgres {{ .Values.postgres.servicePort }}" "kafka {{ .Values.kafka.brokerPort }}"; do
+                set -- $dep
+                until nc -w 2 "$1" "$2" </dev/null 2>/dev/null; do
+                  echo "waiting for $1:$2…"
+                  sleep 2
+                done
+                echo "$1:$2 reachable"
+              done
       containers:
         - name: scheduler
           image: {{ .Values.scheduler.image | quote }}

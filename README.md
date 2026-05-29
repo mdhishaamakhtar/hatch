@@ -24,13 +24,14 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 
 ```sh
 cp .env.example .env       # tweak placeholders if you need to
-make up-all                # deploy observability + hatch
-make port-forward          # localhost ports for Postgres / Redis / Kafka / etc.
-make migrate               # apply DB migrations
+make up-all                # deploy observability + hatch; migrations run in-cluster
 ```
 
-The scheduler API and Grafana are exposed via `Service type=LoadBalancer` and
-are reachable on `localhost:9021` and `localhost:3000` without `port-forward`.
+Migrations run automatically in-cluster via the `db-migrate` hook on every
+`make up` — no port-forward needed. App pods wait for Postgres/Redis/Kafka to be
+reachable before starting, so there's no startup CrashLoopBackOff. The scheduler
+API and Grafana are exposed via `Service type=LoadBalancer` and are reachable on
+`localhost:9021` and `localhost:3000` without `port-forward`.
 
 ## Lifecycle
 
@@ -53,10 +54,10 @@ target it specifically so observability isn't torn down on every cycle.
 
 | Command | What it does |
 |---|---|
-| `make port-forward` | Forward Postgres / Redis / Kafka for host tools (`make migrate` and ad-hoc debugging) |
+| `make port-forward` | Forward Postgres / Redis / Kafka for host tools and ad-hoc debugging |
 | `make status` | Pod status across both namespaces |
 | `make logs SVC=postgres` | Tail logs for one component |
-| `make migrate` | Apply pending DB migrations |
+| `make migrate` | Apply pending DB migrations from the host (escape hatch; `make up` already applies them in-cluster) |
 | `make migrate-down` | Roll back all migrations |
 | `make sqlc` | Regenerate `gen/` from `queries/` + `migrations/` |
 | `make swag-gen` | Regenerate OpenAPI spec under `docs/` from handler annotations |

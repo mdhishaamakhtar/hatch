@@ -44,3 +44,4 @@ helm/*/*.tgz
 # Built binaries (produced by go build ./...)
 /api
 /scheduler
+.zed
