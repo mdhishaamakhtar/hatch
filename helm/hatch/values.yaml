@@ -20,6 +20,14 @@ scheduler:
   wheelStorage:
     size: 1Gi
 
+deliveryWorker:
+  enabled: true
+  image: hatch/delivery-worker:dev
+  imagePullPolicy: Always
+  replicas: 1
+  adminPort: 9023
+  batchSize: 1000
+
 postgres:
   image: postgres:17-alpine
   database: hatch
@@ -38,10 +46,20 @@ kafka:
   brokerPort: 9092
   controllerPort: 9093
   clusterID: 5L6g3nShT-eMCtK--X86sw
-  # Topics provisioned by the post-install/post-upgrade Job. Phase 4 extends
-  # this list with the retry tiers (emails.retry.1min/5min/30min).
+  # Topics provisioned by the post-install/post-upgrade Job. The delivery worker
+  # produces to the retry tiers on transient failure; the Phase 4 retry consumers
+  # drain them.
   topics:
     - name: emails.due
+      partitions: 12
+      replicationFactor: 1
+    - name: emails.retry.1min
+      partitions: 12
+      replicationFactor: 1
+    - name: emails.retry.5min
+      partitions: 12
+      replicationFactor: 1
+    - name: emails.retry.30min
       partitions: 12
       replicationFactor: 1
 

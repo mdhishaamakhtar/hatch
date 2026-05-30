@@ -147,6 +147,10 @@ var allowedVendors = map[string]struct{}{
 	"ses":      {},
 	"sendgrid": {},
 	"smtp":     {},
+	// mock is a first-class registerable vendor: the Delivery Worker ships a
+	// MockProvider impl, and benchmarks/verification provision a vendor=mock
+	// client to exercise the pipeline offline without a real provider.
+	"mock": {},
 }
 
 // handleUpsertProvider attaches or replaces a vendor's Tink-encrypted credentials for a client.

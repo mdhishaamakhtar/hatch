@@ -64,10 +64,12 @@ target it specifically so observability isn't torn down on every cycle.
 | `make test` | `go test -race ./pkg/... ./internal/...` |
 | `make build-api` | Build the scheduler-api image (unique `hatch/api:dev-<ts>` tag + `:dev` alias) |
 | `make build-scheduler` | Build the scheduler-service image (unique `hatch/scheduler:dev-<ts>` tag + `:dev` alias) |
+| `make build-delivery-worker` | Build the delivery-worker image (unique `hatch/delivery-worker:dev-<ts>` tag + `:dev` alias) |
 | `make build-verify` | Build the in-cluster verify image (unique `hatch/verify:dev-<ts>` tag + `:dev` alias) |
 | `make build` | Build every service image |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
 | `make run-scheduler` | Run the scheduler-service locally as a single shard (`POD_INDEX=0 TOTAL_PODS=1`) |
+| `make run-delivery-worker` | Run the delivery-worker locally against `HOST_*` DSNs (no k8s) |
 | `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
 | `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → observability round-trips |
 
@@ -103,8 +105,8 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9022/internal/wh
 ```
 
 Hatch service ports start at `9021` and walk forward (9022 = scheduler admin
-port). This keeps the conventional 3000/8080/9090 range free for tooling — no
-host-side remapping is ever needed.
+port, 9023 = delivery-worker admin port). This keeps the conventional
+3000/8080/9090 range free for tooling — no host-side remapping is ever needed.
 
 ## API timestamp format
 
@@ -169,12 +171,42 @@ Admin endpoints (Bearer `$ADMIN_API_KEY`):
 | `GET /internal/wheel/slots` | All occupied `(slot, count)` pairs |
 | `GET /internal/wheel/slots/{mm}/{ss}` | UUID-stringified schedule_ids in a specific slot |
 
+## Delivery worker
+
+Stateless `Deployment` that consumes `emails.due`, hydrates each schedule from
+Postgres, sends it through a provider, and drives the `scheduled_emails` status
+machine to a terminal state. Three goroutines:
+
+1. **G1 — batch consumer**: polls `emails.due` (consumer group `delivery-workers`),
+   accumulates up to `DELIVERY_BATCH_SIZE` records, hands the batch to G2, and
+   commits offsets only after G2 acks (at-least-once).
+2. **G2 — batch processor**: per row — `mark processing` → read-through client
+   cache (Redis `client:{id}`, 5-min TTL) → Redis `SET NX` idempotency lock →
+   provider-router select → send → `mark delivered`. On transient/rate-limited
+   failure it marks `retrying` and re-enqueues to `emails.retry.{1min,5min,30min}`
+   by attempt; after `DELIVERY_MAX_RETRIES` (3) attempts, or a permanent error, or
+   no available provider, it marks `failed`. An inactive client marks `cancelled`.
+3. **G3 — router ticker**: refills each provider's leaky bucket every
+   `DELIVERY_PROVIDER_TICK`.
+
+The **provider router** keeps a circuit breaker (`sony/gobreaker`) and a leaky
+bucket per `(client, vendor)`. Selection filters to active vendors that have a
+registered implementation, excludes the last-failed vendor and any OPEN breaker,
+and picks the one with the most tokens. Two providers are implemented: `mock`
+(offline, env-tuned latency/error rates) and `resend` (real sends via the Resend
+API). Provider credentials are **per-client** — register them with
+`POST /admin/clients/:id/providers` (`{"vendor":"resend","credentials":{"api_key":"re_…"}}`);
+the API Tink-encrypts them and the worker decrypts with `PROVIDER_CRED_KEY` at
+send time. Resend `from` addresses must be on a domain verified in Resend.
+
+Admin surface on `:9023` — `/healthz`, `/readyz` (Postgres + Redis), `/metrics`.
+
 ## Layout
 
 ```
 cmd/         service entrypoints (api, scheduler, delivery-worker, verify, …)
 internal/    service-specific business logic (incl. verify = in-cluster acceptance auditor)
-pkg/         shared packages (logger, tracer, metrics, config, db, redis, kafka, wheelstore, provider)
+pkg/         shared packages (logger, tracer, metrics, config, db, redis, kafka, wheelstore, provider, crypto)
 migrations/  golang-migrate SQL files
 queries/     sqlc query files
 gen/         generated Go from sqlc

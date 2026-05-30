@@ -73,6 +73,8 @@ func Run(ctx context.Context, lg *zap.Logger) int {
 	v.checkFoundation(ctx)
 	v.checkAPIGoldenPath(ctx)
 	v.checkScheduler(ctx)
+	v.checkDelivery(ctx)
+	v.checkResendDelivery(ctx)
 	v.checkObservability(ctx)
 	v.cleanup(ctx)
 
