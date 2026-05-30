@@ -1,4 +1,4 @@
-package api
+package crypto
 
 import (
 	"bytes"
@@ -58,6 +58,39 @@ func TestEncryptCredentialsRoundtrip(t *testing.T) {
 	}
 	if bytes.Equal(out, out2) {
 		t.Fatal("encryption should produce a fresh nonce each call")
+	}
+
+	// Decrypt recovers the exact plaintext for both ciphertexts.
+	for _, ct := range [][]byte{out, out2} {
+		got, err := cipher.DecryptCredentials(ct)
+		if err != nil {
+			t.Fatalf("decrypt: %v", err)
+		}
+		if !bytes.Equal(got, plaintext) {
+			t.Fatalf("decrypt roundtrip mismatch: got %s want %s", got, plaintext)
+		}
+	}
+}
+
+func TestDecryptCredentialsErrors(t *testing.T) {
+	cipher, err := LoadCipher(freshKeysetB64(t))
+	if err != nil {
+		t.Fatalf("load cipher: %v", err)
+	}
+	if _, err := cipher.DecryptCredentials([]byte("not-json")); err == nil {
+		t.Fatal("malformed envelope should error")
+	}
+	if _, err := cipher.DecryptCredentials([]byte(`{"v":2,"ct":"AAAA"}`)); err == nil {
+		t.Fatal("unsupported version should error")
+	}
+	if _, err := cipher.DecryptCredentials([]byte(`{"v":1,"ct":"!!notb64"}`)); err == nil {
+		t.Fatal("non-base64 ciphertext should error")
+	}
+	// Ciphertext from a different keyset must fail authentication.
+	other, _ := LoadCipher(freshKeysetB64(t))
+	enc, _ := other.EncryptCredentials([]byte(`{"api_key":"x"}`))
+	if _, err := cipher.DecryptCredentials(enc); err == nil {
+		t.Fatal("decrypt with wrong key should error")
 	}
 }
 

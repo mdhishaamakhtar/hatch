@@ -53,9 +53,11 @@ func (v *Verifier) checkAPIGoldenPath(ctx context.Context) {
 		v.rep.Failf("seed redis cache key: %v", err)
 	}
 
-	// Attach a provider whose plaintext we will grep for in the DB.
+	// Attach a mock provider whose plaintext we grep for in the DB. The verify
+	// client routes through mock so its scheduled emails deliver deterministically
+	// and offline (the live Resend leg is exercised separately in checkResendDelivery).
 	resp, err = v.do(ctx, http.MethodPost, v.cfg.APIBase+"/admin/clients/"+v.clientID+"/providers", v.cfg.AdminKey,
-		map[string]any{"vendor": "resend", "credentials": map[string]any{"api_key": v.marker}})
+		map[string]any{"vendor": "mock", "credentials": map[string]any{"api_key": v.marker}})
 	if err != nil || resp.code != http.StatusCreated {
 		v.rep.Failf("POST /admin/clients/:id/providers → %v (code %d)", err, codeOf(resp, err))
 	} else {

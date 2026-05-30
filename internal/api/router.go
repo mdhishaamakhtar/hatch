@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mdhishaamakhtar/hatch/gen"
+	"github.com/mdhishaamakhtar/hatch/pkg/crypto"
 	"github.com/mdhishaamakhtar/hatch/pkg/metrics"
 	"github.com/redis/rueidis"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
@@ -22,12 +23,12 @@ type Server struct {
 	pool    *pgxpool.Pool
 	redis   rueidis.Client
 	queries *gen.Queries
-	cipher  *CredentialCipher
+	cipher  *crypto.Cipher
 	limiter *rateLimitStore
 }
 
 // NewServer wires every dependency. Caller owns pool/redis lifecycle.
-func NewServer(cfg Config, lg *zap.Logger, pool *pgxpool.Pool, rc rueidis.Client, cipher *CredentialCipher) *Server {
+func NewServer(cfg Config, lg *zap.Logger, pool *pgxpool.Pool, rc rueidis.Client, cipher *crypto.Cipher) *Server {
 	return &Server{
 		cfg:     cfg,
 		lg:      lg,

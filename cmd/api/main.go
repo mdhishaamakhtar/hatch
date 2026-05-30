@@ -29,6 +29,7 @@ import (
 	_ "github.com/mdhishaamakhtar/hatch/docs"
 	"github.com/mdhishaamakhtar/hatch/internal/api"
 	"github.com/mdhishaamakhtar/hatch/pkg/config"
+	"github.com/mdhishaamakhtar/hatch/pkg/crypto"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	"github.com/mdhishaamakhtar/hatch/pkg/logger"
 	"github.com/mdhishaamakhtar/hatch/pkg/redis"
@@ -84,7 +85,7 @@ func run(lg *zap.Logger) error {
 	}
 	defer rc.Close()
 
-	cipher, err := api.LoadCipher(cfg.ProviderCredKey)
+	cipher, err := crypto.LoadCipher(cfg.ProviderCredKey)
 	if err != nil {
 		return fmt.Errorf("cipher: %w", err)
 	}

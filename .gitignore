@@ -40,6 +40,7 @@ helm/*/*.tgz
 .api-image-tag
 .scheduler-image-tag
 .verify-image-tag
+.delivery-worker-image-tag
 
 # Built binaries (produced by go build ./...)
 /api

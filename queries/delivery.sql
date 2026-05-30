@@ -40,6 +40,12 @@ WHERE id = $1
 -- name: MarkCancelled :exec
 UPDATE scheduled_emails
 SET status = 'cancelled',
+    failure_reason = $3,
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2;
+
+-- name: GetClientForDelivery :one
+SELECT is_active
+FROM clients
+WHERE id = $1;

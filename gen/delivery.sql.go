@@ -54,21 +54,36 @@ func (q *Queries) BatchFetchSchedules(ctx context.Context, ids [][]byte) ([]Sche
 	return items, nil
 }
 
+const getClientForDelivery = `-- name: GetClientForDelivery :one
+SELECT is_active
+FROM clients
+WHERE id = $1
+`
+
+func (q *Queries) GetClientForDelivery(ctx context.Context, id []byte) (bool, error) {
+	row := q.db.QueryRow(ctx, getClientForDelivery, id)
+	var is_active bool
+	err := row.Scan(&is_active)
+	return is_active, err
+}
+
 const markCancelled = `-- name: MarkCancelled :exec
 UPDATE scheduled_emails
 SET status = 'cancelled',
+    failure_reason = $3,
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
 `
 
 type MarkCancelledParams struct {
-	ID        []byte             `db:"id" json:"id"`
-	DeliverAt pgtype.Timestamptz `db:"deliver_at" json:"deliver_at"`
+	ID            []byte             `db:"id" json:"id"`
+	DeliverAt     pgtype.Timestamptz `db:"deliver_at" json:"deliver_at"`
+	FailureReason *string            `db:"failure_reason" json:"failure_reason"`
 }
 
 func (q *Queries) MarkCancelled(ctx context.Context, arg MarkCancelledParams) error {
-	_, err := q.db.Exec(ctx, markCancelled, arg.ID, arg.DeliverAt)
+	_, err := q.db.Exec(ctx, markCancelled, arg.ID, arg.DeliverAt, arg.FailureReason)
 	return err
 }
 

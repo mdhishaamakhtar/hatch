@@ -29,6 +29,12 @@ type Config struct {
 	// ScheduleLeadSeconds is how far ahead batch schedules are posted — just
 	// past the API's minimum now→deliver_at horizon so they fire within the run.
 	ScheduleLeadSeconds int
+
+	// Resend real-send check. The audit always exercises a live Resend send to
+	// the sandbox recipient; the key must be present in hatch-secrets.
+	ResendAPIKey string
+	ResendFrom   string
+	ResendTo     string
 }
 
 // SchedulerURL returns the per-pod admin URL for scheduler ordinal i, reached
@@ -54,6 +60,10 @@ func LoadConfig() (Config, error) {
 		SchedPort:           envInt("SCHEDULER_ADMIN_PORT", 9022),
 		SchedDomain:         env("VERIFY_SCHEDULER_DOMAIN", "scheduler.hatch.svc.cluster.local"),
 		ScheduleLeadSeconds: envInt("VERIFY_SCHEDULE_LEAD_SECONDS", 150),
+
+		ResendAPIKey: os.Getenv("VERIFY_RESEND_API_KEY"),
+		ResendFrom:   env("VERIFY_RESEND_FROM", "verify@nexia.hishaam.dev"),
+		ResendTo:     env("VERIFY_RESEND_TO", "delivered@resend.dev"),
 	}
 
 	for b := range strings.SplitSeq(env("KAFKA_BROKERS", ""), ",") {
