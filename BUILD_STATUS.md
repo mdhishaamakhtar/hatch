@@ -1,7 +1,7 @@
 # Build Status
 
-Current phase: **Phase 3 — Delivery Workers (complete ✅)**
-Next up: **Phase 4 — Retry Consumers**
+Current phase: **Phase 4 — Retry Consumers (complete ✅)**
+Next up: **Phase 5 — Reconciliation + Partition Archival crons**
 
 | Phase | Title | Status |
 |------:|---|---|
@@ -9,8 +9,8 @@ Next up: **Phase 4 — Retry Consumers**
 | 1 | Scheduler API (router, auth, rate-limit, schedule + admin endpoints, instrumentation) | ✅ done |
 | 2 | Scheduler Service (timer wheel, bbolt, Kafka produce, observability APIs) | ✅ done |
 | 3 | Delivery Workers (batch consumer, provider router, mock + Resend providers, idempotency, retry-tier produce) | ✅ done |
-| 4 | Retry Consumers (3 tier consumers + instrumentation) | ⏳ next |
-| 5 | Reconciliation + Partition Archival crons | ⏸ pending |
+| 4 | Retry Consumers (3 tier drain consumers, re-enqueue to emails.due, instrumentation) | ✅ done |
+| 5 | Reconciliation + Partition Archival crons | ⏳ next |
 | 6 | Grafana dashboards + Alertmanager wiring | ⏸ pending |
 
 Verification is a single cumulative audit: `make verify` runs a host prelude

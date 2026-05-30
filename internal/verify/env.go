@@ -35,6 +35,11 @@ type Config struct {
 	ResendAPIKey string
 	ResendFrom   string
 	ResendTo     string
+
+	// RetryFailRecipient is the MockProvider fail sentinel — must match the
+	// delivery worker's MOCK_PROVIDER_FAIL_RECIPIENT. A send to it always fails
+	// transiently, letting the retry check drive a row through all three tiers.
+	RetryFailRecipient string
 }
 
 // SchedulerURL returns the per-pod admin URL for scheduler ordinal i, reached
@@ -64,6 +69,8 @@ func LoadConfig() (Config, error) {
 		ResendAPIKey: os.Getenv("VERIFY_RESEND_API_KEY"),
 		ResendFrom:   env("VERIFY_RESEND_FROM", "verify@nexia.hishaam.dev"),
 		ResendTo:     env("VERIFY_RESEND_TO", "delivered@resend.dev"),
+
+		RetryFailRecipient: env("VERIFY_RETRY_FAIL_RECIPIENT", "fail@mock.test"),
 	}
 
 	for b := range strings.SplitSeq(env("KAFKA_BROKERS", ""), ",") {

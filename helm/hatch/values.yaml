@@ -27,6 +27,28 @@ deliveryWorker:
   replicas: 1
   adminPort: 9023
   batchSize: 1000
+  mock:
+    # Deterministic failure seam for the acceptance verifier: sends to this exact
+    # recipient always fail transiently, so the retry tiers + exhaustion path can
+    # be exercised end to end. Empty disables it; it never affects other traffic.
+    failRecipient: "fail@mock.test"
+
+# Phase 4 retry consumers: one Deployment running a drain goroutine per tier.
+# Stateless (Kafka only). Drain intervals default to the production 1m/5m/30m in
+# code (internal/retry/config.go); the values below override them to a few
+# seconds so `make verify` and demos on the dev cluster don't wait minutes for a
+# retry to flow through.
+retryConsumer:
+  enabled: true
+  image: hatch/retry-consumer:dev
+  imagePullPolicy: Always
+  replicas: 1
+  adminPort: 9024
+  drainBatchSize: 1000
+  intervals:
+    tier1min: 2s
+    tier5min: 4s
+    tier30min: 8s
 
 postgres:
   image: postgres:17-alpine

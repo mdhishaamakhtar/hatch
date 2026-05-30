@@ -29,6 +29,20 @@ func TestMockProvider_alwaysRateLimited(t *testing.T) {
 	}
 }
 
+func TestMockProvider_failRecipient(t *testing.T) {
+	// ErrorRate 0 + RateLimitRate 0 means the only way to fail is the sentinel.
+	p := NewMockProvider(MockConfig{LatencyMS: 1, FailRecipient: "fail@mock.test"})
+
+	if err := p.Send(context.Background(), Email{RecipientEmail: "fail@mock.test"}); !errors.Is(err, ErrTransient) {
+		t.Fatalf("sentinel recipient: err = %v, want ErrTransient", err)
+	}
+	for i := range 50 {
+		if err := p.Send(context.Background(), Email{RecipientEmail: "ok@example.com"}); err != nil {
+			t.Fatalf("non-sentinel recipient should succeed (iter %d): %v", i, err)
+		}
+	}
+}
+
 func TestMockProvider_respectsCtx(t *testing.T) {
 	p := NewMockProvider(MockConfig{LatencyMS: 1000, LatencyJitterMS: 0})
 	ctx, cancel := context.WithCancel(context.Background())
