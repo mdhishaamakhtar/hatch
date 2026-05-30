@@ -46,6 +46,13 @@ type MockConfig struct {
 	LatencyJitterMS int     `env:"MOCK_PROVIDER_LATENCY_JITTER_MS" envDefault:"50"`
 	ErrorRate       float64 `env:"MOCK_PROVIDER_ERROR_RATE" envDefault:"0.001"`
 	RateLimitRate   float64 `env:"MOCK_PROVIDER_RATE_LIMIT_RATE" envDefault:"0.0"`
+
+	// FailRecipient, when set, makes Send return ErrTransient on every attempt
+	// for that exact recipient — a deterministic failure seam used by the
+	// acceptance verifier to drive a schedule through all three retry tiers
+	// without touching the probabilistic ErrorRate. Empty (the default)
+	// disables it, so it never affects normal traffic.
+	FailRecipient string `env:"MOCK_PROVIDER_FAIL_RECIPIENT"`
 }
 
 // MockProvider satisfies Provider with env-controlled latency and error
@@ -66,7 +73,7 @@ func NewMockProvider(cfg MockConfig) *MockProvider {
 func (m *MockProvider) Vendor() string { return "mock" }
 
 // Send implements Provider with simulated latency and error rates.
-func (m *MockProvider) Send(ctx context.Context, _ Email) error {
+func (m *MockProvider) Send(ctx context.Context, e Email) error {
 	jitter := 0
 	if m.cfg.LatencyJitterMS > 0 {
 		jitter = m.rng.IntN(m.cfg.LatencyJitterMS)
@@ -76,6 +83,11 @@ func (m *MockProvider) Send(ctx context.Context, _ Email) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(d):
+	}
+
+	// Deterministic failure seam: the sentinel recipient always fails transiently.
+	if m.cfg.FailRecipient != "" && e.RecipientEmail == m.cfg.FailRecipient {
+		return ErrTransient
 	}
 
 	if m.cfg.RateLimitRate > 0 && m.rng.Float64() < m.cfg.RateLimitRate {

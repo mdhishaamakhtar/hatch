@@ -65,13 +65,15 @@ target it specifically so observability isn't torn down on every cycle.
 | `make build-api` | Build the scheduler-api image (unique `hatch/api:dev-<ts>` tag + `:dev` alias) |
 | `make build-scheduler` | Build the scheduler-service image (unique `hatch/scheduler:dev-<ts>` tag + `:dev` alias) |
 | `make build-delivery-worker` | Build the delivery-worker image (unique `hatch/delivery-worker:dev-<ts>` tag + `:dev` alias) |
+| `make build-retry-consumer` | Build the retry-consumer image (unique `hatch/retry-consumer:dev-<ts>` tag + `:dev` alias) |
 | `make build-verify` | Build the in-cluster verify image (unique `hatch/verify:dev-<ts>` tag + `:dev` alias) |
 | `make build` | Build every service image |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
 | `make run-scheduler` | Run the scheduler-service locally as a single shard (`POD_INDEX=0 TOTAL_PODS=1`) |
 | `make run-delivery-worker` | Run the delivery-worker locally against `HOST_*` DSNs (no k8s) |
+| `make run-retry-consumer` | Run the retry-consumer locally against `HOST_*` brokers (no k8s) |
 | `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
-| `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → observability round-trips |
+| `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → delivery → retry → observability round-trips |
 
 ## Local URLs
 
@@ -105,8 +107,9 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9022/internal/wh
 ```
 
 Hatch service ports start at `9021` and walk forward (9022 = scheduler admin
-port, 9023 = delivery-worker admin port). This keeps the conventional
-3000/8080/9090 range free for tooling — no host-side remapping is ever needed.
+port, 9023 = delivery-worker admin port, 9024 = retry-consumer admin port). This
+keeps the conventional 3000/8080/9090 range free for tooling — no host-side
+remapping is ever needed.
 
 ## API timestamp format
 
@@ -191,15 +194,43 @@ machine to a terminal state. Three goroutines:
 
 The **provider router** keeps a circuit breaker (`sony/gobreaker`) and a leaky
 bucket per `(client, vendor)`. Selection filters to active vendors that have a
-registered implementation, excludes the last-failed vendor and any OPEN breaker,
-and picks the one with the most tokens. Two providers are implemented: `mock`
-(offline, env-tuned latency/error rates) and `resend` (real sends via the Resend
-API). Provider credentials are **per-client** — register them with
+registered implementation, excludes any OPEN breaker, prefers a vendor other than
+the last-failed one, and picks the one with the most tokens. The last-failed
+exclusion is **best-effort**: it only kicks in when an alternative exists — if the
+just-failed vendor is the client's *only* eligible provider, the exclusion is
+dropped and the send is retried on it (a single-provider client must not be
+stranded with `no_active_providers` after one transient blip; the retry tiers
+exist precisely to reattempt transient failures). A genuinely unhealthy sole
+provider still trips its breaker and yields no candidate. Two providers are
+implemented: `mock` (offline, env-tuned latency/error rates) and `resend` (real
+sends via the Resend API). Provider credentials are **per-client** — register them with
 `POST /admin/clients/:id/providers` (`{"vendor":"resend","credentials":{"api_key":"re_…"}}`);
 the API Tink-encrypts them and the worker decrypts with `PROVIDER_CRED_KEY` at
 send time. Resend `from` addresses must be on a domain verified in Resend.
 
 Admin surface on `:9023` — `/healthz`, `/readyz` (Postgres + Redis), `/metrics`.
+
+## Retry consumers
+
+Stateless `Deployment` that drains the three retry-tier topics and re-enqueues
+each `schedule_id` back onto `emails.due`. One drain goroutine per tier, each
+with its own durable consumer group (`retry-consumer-{1min,5min,30min}`) and a
+drain ticker: on every tick it drains the tier topic and re-produces each record
+to `emails.due` (carrying the original OTel trace context), committing offsets
+only after a clean re-enqueue (at-least-once; duplicates are deduped by the
+worker's Redis idempotency key). There is **no retry logic here** — exhaustion is
+decided by the delivery worker on re-attempt from the Postgres `retry_count`, so
+the consumer never touches Postgres or Redis.
+
+Drain intervals are env-configurable (`RETRY_INTERVAL_{1MIN,5MIN,30MIN}`). They
+default to the production `1m/5m/30m` in code; the dev cluster's Helm chart
+overrides them to a few seconds so demos and `make verify` don't wait minutes for
+a retry to flow through. A message's effective delay is bounded by its tier
+interval — coarse by design.
+
+Admin surface on `:9024` — `/healthz`, `/readyz` (Kafka ping), `/metrics`
+(`hatch_retry_drained_total`, `hatch_retry_reenqueue_failures_total`,
+`hatch_retry_drain_duration_seconds`, all by `tier`).
 
 ## Layout
 

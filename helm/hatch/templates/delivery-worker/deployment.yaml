@@ -53,6 +53,8 @@ spec:
               value: {{ .Values.deliveryWorker.adminPort | quote }}
             - name: DELIVERY_BATCH_SIZE
               value: {{ .Values.deliveryWorker.batchSize | quote }}
+            - name: MOCK_PROVIDER_FAIL_RECIPIENT
+              value: {{ .Values.deliveryWorker.mock.failRecipient | quote }}
           readinessProbe:
             httpGet:
               path: /readyz

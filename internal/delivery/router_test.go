@@ -48,6 +48,33 @@ func TestSelectExcludesLastProvider(t *testing.T) {
 	}
 }
 
+func TestSelectRetriesSoleProviderWhenExclusionEmptiesSet(t *testing.T) {
+	// Single provider that just failed: last_provider exclusion would leave no
+	// candidate, so it's dropped and we retry on the sole provider.
+	r := testRouter(t, 100, 100, map[string]provider.Factory{
+		"mock": stubFactory(&stubProvider{vendor: "mock"}),
+	})
+	vendor, _, ok := r.Select("c1", provs("mock"), "mock")
+	if !ok || vendor != "mock" {
+		t.Fatalf("want mock retried as the sole provider, got %q ok=%v", vendor, ok)
+	}
+}
+
+func TestSelectSoleProviderBreakerOpenStillFails(t *testing.T) {
+	// The exclusion relaxation does NOT override breaker-OPEN: a genuinely
+	// unhealthy sole provider yields no candidate even on retry.
+	stub := &stubProvider{vendor: "mock", err: provider.ErrTransient}
+	r := testRouter(t, 100, 100, map[string]provider.Factory{
+		"mock": stubFactory(stub),
+	})
+	for i := 0; i < 2; i++ { // trip the breaker (minReqs 2, ratio 0.5)
+		_ = r.Send(context.Background(), "c1", "mock", nil, provider.Email{})
+	}
+	if _, _, ok := r.Select("c1", provs("mock"), "mock"); ok {
+		t.Fatal("want ok=false: sole provider with OPEN breaker must not be retried")
+	}
+}
+
 func TestSelectSkipsUnregisteredVendor(t *testing.T) {
 	r := testRouter(t, 100, 100, map[string]provider.Factory{
 		"mock": stubFactory(&stubProvider{vendor: "mock"}),

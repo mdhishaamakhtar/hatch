@@ -98,19 +98,45 @@ func (r *Router) Refill() {
 
 // Select runs the LLD selection algorithm and consumes one token from the chosen
 // vendor's bucket. Returns ok=false when no vendor remains (no registered impl,
-// excluded by last_provider, OPEN breaker, or no capacity).
+// OPEN breaker, or no capacity).
+//
+// last_provider exclusion is best-effort: it avoids immediately re-hitting the
+// vendor that just failed *when an alternative exists*. If excluding it would
+// leave no candidate — i.e. it's the client's only eligible provider — the
+// exclusion is dropped and we retry on it anyway. The retry tiers exist to
+// reattempt transient failures, so a single-provider client must not be stranded
+// with no_active_providers after one transient blip; a genuinely unhealthy sole
+// provider still trips its breaker and yields no candidate.
 func (r *Router) Select(clientID string, providers []cachedProvider, lastProvider string) (vendor string, creds []byte, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// First pass: prefer any healthy vendor other than the one that just failed.
+	vendor, creds, best := r.pickBestLocked(clientID, providers, lastProvider)
+	if best == nil && lastProvider != "" {
+		// The just-failed vendor is the only eligible option — retry on it rather
+		// than failing the send for lack of an alternative.
+		vendor, creds, best = r.pickBestLocked(clientID, providers, "")
+	}
+	if best == nil || !best.bucket.take() {
+		return "", nil, false
+	}
+	mBucketTokens.WithLabelValues(vendor).Set(float64(best.bucket.tokens))
+	return vendor, creds, true
+}
+
+// pickBestLocked scans providers for the highest-token vendor that has a
+// registered implementation and a non-OPEN breaker, optionally skipping
+// excludeVendor. It does not consume a token — the caller takes one from the
+// returned state. Returns a nil state when nothing qualifies. Caller holds r.mu.
+func (r *Router) pickBestLocked(clientID string, providers []cachedProvider, excludeVendor string) (vendor string, creds []byte, best *vendorState) {
 	bestTokens := 0
-	var best *vendorState
 	for _, p := range providers {
 		if _, has := r.factories[p.Vendor]; !has {
 			continue // no implementation registered for this vendor
 		}
-		if p.Vendor == lastProvider {
-			continue // don't immediately retry the vendor that just failed
+		if excludeVendor != "" && p.Vendor == excludeVendor {
+			continue // skip the vendor that just failed (when an alternative exists)
 		}
 		st := r.stateForLocked(clientID, p.Vendor)
 		if st.breaker.State() == gobreaker.StateOpen {
@@ -123,11 +149,7 @@ func (r *Router) Select(clientID string, providers []cachedProvider, lastProvide
 			creds = p.Credentials
 		}
 	}
-	if best == nil || !best.bucket.take() {
-		return "", nil, false
-	}
-	mBucketTokens.WithLabelValues(vendor).Set(float64(best.bucket.tokens))
-	return vendor, creds, true
+	return vendor, creds, best
 }
 
 // Send builds (or reuses) the per-client provider and runs the send through the

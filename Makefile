@@ -18,7 +18,7 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: build-api build-scheduler build-delivery-worker ## Build all Hatch service Docker images
+build: build-api build-scheduler build-delivery-worker build-retry-consumer ## Build all Hatch service Docker images
 
 .PHONY: build-api
 build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
@@ -40,6 +40,13 @@ build-delivery-worker: ## Build the delivery-worker Docker image with a unique t
 	  docker build -f Dockerfile.delivery-worker -t hatch/delivery-worker:$$TAG -t hatch/delivery-worker:dev . && \
 	  echo $$TAG > .delivery-worker-image-tag && \
 	  echo "→ tagged: hatch/delivery-worker:$$TAG (also hatch/delivery-worker:dev)"
+
+.PHONY: build-retry-consumer
+build-retry-consumer: ## Build the retry-consumer Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.retry-consumer -t hatch/retry-consumer:$$TAG -t hatch/retry-consumer:dev . && \
+	  echo $$TAG > .retry-consumer-image-tag && \
+	  echo "→ tagged: hatch/retry-consumer:$$TAG (also hatch/retry-consumer:dev)"
 
 .PHONY: build-verify
 build-verify: ## Build the in-cluster verify Docker image with a unique tag
@@ -82,6 +89,13 @@ run-delivery-worker: ## Run delivery-worker locally against HOST_* DSNs (no k8s)
 	  OTLP_ENDPOINT="" \
 	  go run ./cmd/delivery-worker
 
+.PHONY: run-retry-consumer
+run-retry-consumer: ## Run retry-consumer locally against HOST_* brokers (no k8s)
+	@set -a; . ./.env; set +a; \
+	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
+	  OTLP_ENDPOINT="" \
+	  go run ./cmd/retry-consumer
+
 .PHONY: gen-provider-key
 gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
 	@go run ./cmd/tinkgen
@@ -97,12 +111,14 @@ up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs
 	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
 	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
 	 DW_TAG=$$([ -f .delivery-worker-image-tag ] && cat .delivery-worker-image-tag || echo dev); \
-	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG"; \
+	 RC_TAG=$$([ -f .retry-consumer-image-tag ] && cat .retry-consumer-image-tag || echo dev); \
+	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG, retry-consumer with hatch/retry-consumer:$$RC_TAG"; \
 	  $(HELM) upgrade --install hatch ./helm/hatch \
 	    --namespace $(NS_HATCH) --create-namespace \
 	    --set api.image=hatch/api:$$API_TAG \
 	    --set scheduler.image=hatch/scheduler:$$SCHED_TAG \
 	    --set deliveryWorker.image=hatch/delivery-worker:$$DW_TAG \
+	    --set retryConsumer.image=hatch/retry-consumer:$$RC_TAG \
 	    --wait --timeout 5m
 	@echo
 	@echo "Hatch up. Port-forward with: make port-forward"
