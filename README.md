@@ -66,14 +66,18 @@ target it specifically so observability isn't torn down on every cycle.
 | `make build-scheduler` | Build the scheduler-service image (unique `hatch/scheduler:dev-<ts>` tag + `:dev` alias) |
 | `make build-delivery-worker` | Build the delivery-worker image (unique `hatch/delivery-worker:dev-<ts>` tag + `:dev` alias) |
 | `make build-retry-consumer` | Build the retry-consumer image (unique `hatch/retry-consumer:dev-<ts>` tag + `:dev` alias) |
+| `make build-reconciliation-cron` | Build the reconciliation-cron image (unique `hatch/reconciliation-cron:dev-<ts>` tag + `:dev` alias) |
+| `make build-partition-archival` | Build the partition-archival image (unique `hatch/partition-archival:dev-<ts>` tag + `:dev` alias) |
 | `make build-verify` | Build the in-cluster verify image (unique `hatch/verify:dev-<ts>` tag + `:dev` alias) |
 | `make build` | Build every service image |
 | `make run-api` | Run the scheduler-api locally against `HOST_*` DSNs (no k8s) |
 | `make run-scheduler` | Run the scheduler-service locally as a single shard (`POD_INDEX=0 TOTAL_PODS=1`) |
 | `make run-delivery-worker` | Run the delivery-worker locally against `HOST_*` DSNs (no k8s) |
 | `make run-retry-consumer` | Run the retry-consumer locally against `HOST_*` brokers (no k8s) |
+| `make run-reconciliation-cron` | Run the reconciliation-cron locally against `HOST_*` DSNs (no k8s) |
+| `make run-partition-archival` | Run the partition-archival locally against `HOST_*` DSNs (no k8s) |
 | `make gen-provider-key` | Print a fresh base64 Tink AES256-GCM keyset for `PROVIDER_CRED_KEY` |
-| `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → delivery → retry → observability round-trips |
+| `make verify` | Run the full cumulative acceptance audit: a host prelude (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations → API golden path → scheduler → Kafka → delivery → retry → reconciliation → partition archival → observability round-trips |
 
 ## Local URLs
 
@@ -107,9 +111,10 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9022/internal/wh
 ```
 
 Hatch service ports start at `9021` and walk forward (9022 = scheduler admin
-port, 9023 = delivery-worker admin port, 9024 = retry-consumer admin port). This
-keeps the conventional 3000/8080/9090 range free for tooling — no host-side
-remapping is ever needed.
+port, 9023 = delivery-worker admin port, 9024 = retry-consumer admin port, 9025 =
+reconciliation-cron admin port, 9026 = partition-archival admin port). This keeps
+the conventional 3000/8080/9090 range free for tooling — no host-side remapping
+is ever needed.
 
 ## API timestamp format
 
@@ -231,6 +236,45 @@ interval — coarse by design.
 Admin surface on `:9024` — `/healthz`, `/readyz` (Kafka ping), `/metrics`
 (`hatch_retry_drained_total`, `hatch_retry_reenqueue_failures_total`,
 `hatch_retry_drain_duration_seconds`, all by `tier`).
+
+## Reconciliation cron
+
+Stateless `Deployment` that runs a periodic sweep recovering schedule rows
+stranded by a crash and re-enqueuing each onto `emails.due`. Two SQL passes:
+
+- **Pass 1 (fresh attempt)** — rows stuck `pending` with an elapsed `deliver_at`,
+  or `processing` with `updated_at` older than 10 minutes. No real attempt was
+  made, so the pass resets `retry_count`/`last_provider` before re-enqueuing.
+- **Pass 2 (orphaned retry)** — rows stuck `retrying` with `updated_at` older than
+  2 hours (a retry consumer crashed before re-enqueuing). The pass preserves
+  `retry_count`/`last_provider` — no extra retry budget.
+
+Idempotent by design: every re-enqueue is deduped downstream by the delivery
+worker's Redis `SET NX`, so a re-run never double-sends. The sweep interval is
+`RECON_INTERVAL` (24h in production; the dev cluster sets it long and relies on
+the run-on-boot sweep, since the acceptance verifier drives recovery in-process).
+Admin surface on `:9025` — `/healthz`, `/readyz` (Postgres + Kafka ping),
+`/metrics` (`hatch_recon_rows_recovered_total{pass}`,
+`hatch_recon_run_duration_seconds`, `hatch_recon_last_run_timestamp`).
+
+## Partition archival cron
+
+Stateless `Deployment` that reclaims disk from old `scheduled_emails` partitions.
+Each sweep walks the attached partitions (named `scheduled_emails_yYYYYmMM`) and,
+for every one whose month is **fully in the past** *and* whose rows are **all
+terminal** (`delivered`/`failed`/`cancelled`), archives it: `DETACH PARTITION` →
+export to `<ARCHIVE_DIR>/<name>.csv.gz` via `COPY … TO STDOUT` → `DROP TABLE`. A
+partition with any non-terminal row is left attached and retried next cycle.
+
+The 1200 monthly partitions are pre-created with a 100-year forward runway
+(migration 004); archival only ever drops fully-past partitions, so the
+current/future runway is never touched. The interval is `ARCHIVAL_INTERVAL`
+(monthly in production; long in the dev cluster, where the verifier exercises
+archival in-process over isolated past partitions). Exports land on an `emptyDir`
+at `/archive` in dev (a PVC or S3/GCS sync target in production). Admin surface on
+`:9026` — `/healthz`, `/readyz` (Postgres ping), `/metrics`
+(`hatch_db_active_partitions`, `hatch_archival_partitions_archived_total`,
+`hatch_archival_run_duration_seconds`, `hatch_archival_last_run_timestamp`).
 
 ## Layout
 

@@ -50,6 +50,32 @@ retryConsumer:
     tier5min: 4s
     tier30min: 8s
 
+# Phase 5 reconciliation cron: a Deployment running a periodic sweep that
+# recovers schedule rows stranded by a crash and re-enqueues them onto
+# emails.due. The acceptance verifier drives recovery in-process, so the dev
+# interval is long (the cron stays dormant during `make verify`); its run-on-boot
+# sweep emits the last-run gauge the staleness alert watches.
+reconciliationCron:
+  enabled: true
+  image: hatch/reconciliation-cron:dev
+  imagePullPolicy: Always
+  replicas: 1
+  adminPort: 9025
+  interval: 1h
+
+# Phase 5 partition archival cron: a Deployment that detaches, exports (gzip
+# CSV), and drops fully-past, fully-terminal scheduled_emails partitions. The
+# verifier drives archival in-process over isolated test partitions, so the dev
+# interval is long; its run-on-boot sweep emits the active-partition and last-run
+# gauges. Exports are written to an emptyDir at /archive.
+partitionArchival:
+  enabled: true
+  image: hatch/partition-archival:dev
+  imagePullPolicy: Always
+  replicas: 1
+  adminPort: 9026
+  interval: 1h
+
 postgres:
   image: postgres:17-alpine
   database: hatch

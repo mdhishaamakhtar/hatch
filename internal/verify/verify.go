@@ -76,6 +76,8 @@ func Run(ctx context.Context, lg *zap.Logger) int {
 	v.checkDelivery(ctx)
 	v.checkResendDelivery(ctx)
 	v.checkRetry(ctx)
+	v.checkReconciliation(ctx)
+	v.checkArchival(ctx)
 	v.checkObservability(ctx)
 	v.cleanup(ctx)
 

@@ -21,6 +21,14 @@ spec:
         app.kubernetes.io/component: verify
     spec:
       restartPolicy: Never
+      # fsGroup lets the distroless nonroot user (65532) write to the scratch
+      # emptyDir below — the archival check streams partition exports there via
+      # os.MkdirTemp (TMPDIR).
+      securityContext:
+        fsGroup: 65532
+      volumes:
+        - name: scratch
+          emptyDir: {}
       containers:
         - name: verify
           image: ${VERIFY_IMAGE}
@@ -28,3 +36,9 @@ spec:
           envFrom:
             - secretRef:
                 name: hatch-secrets
+          env:
+            - name: TMPDIR
+              value: /scratch
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
