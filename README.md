@@ -3,8 +3,23 @@
 General-purpose, high-scale future email scheduler. Schedule emails from 1 hour
 to years in advance, with at-least-once delivery and pluggable email providers.
 
-**Stack:** Go, PostgreSQL (partitioned), Kafka (KRaft), bbolt, Redis, on
-Kubernetes — with a full Prometheus / Loki / Tempo / Grafana observability stack.
+## Tech Stack
+
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Orchestration-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Helm](https://img.shields.io/badge/Helm-4-0F1689?style=for-the-badge&logo=helm&logoColor=white)](https://helm.sh/)
+[![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-3.9_KRaft-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17_Partitioned-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+[![bbolt](https://img.shields.io/badge/bbolt-1.4-4E5D6C?style=for-the-badge)](https://github.com/etcd-io/bbolt)
+[![franz-go](https://img.shields.io/badge/franz--go-1.21-3A3A3A?style=for-the-badge)](https://github.com/twmb/franz-go)
+[![Resend](https://img.shields.io/badge/Resend-Provider-000000?style=for-the-badge&logo=resend&logoColor=white)](https://resend.com/)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-425CC7?style=for-the-badge&logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+[![Zap](https://img.shields.io/badge/Uber_Zap-1.28-232F3E?style=for-the-badge&logo=uber&logoColor=white)](https://github.com/uber-go/zap)
+[![Prometheus](https://img.shields.io/badge/Prometheus-Metrics-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)](https://prometheus.io/)
+[![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/)
+[![Loki](https://img.shields.io/badge/Loki-Logs-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/oss/loki/)
+[![Tempo](https://img.shields.io/badge/Tempo-Traces-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/oss/tempo/)
 
 A timer-wheel scheduler shards the keyspace across replicas and fires due emails
 onto Kafka; stateless delivery workers send them through per-client providers
