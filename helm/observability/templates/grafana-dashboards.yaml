@@ -1,0 +1,22 @@
+# One ConfigMap per dashboard JSON under dashboards/. Grafana's sidecar
+# (grafana.sidecar.dashboards.enabled in values.yaml) watches the release
+# namespace for ConfigMaps labelled grafana_dashboard and imports them, so the
+# Hatch dashboards load automatically on every `make up-obs` — no UI clicks.
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hatch-dashboard-{{ $name }}
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: hatch
+  annotations:
+    # Paired with grafana.sidecar.dashboards.folderAnnotation in values.yaml:
+    # the sidecar files these under a "Hatch" folder in Grafana.
+    grafana_folder: "Hatch"
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

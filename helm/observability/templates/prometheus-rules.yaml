@@ -1,0 +1,138 @@
+# Hatch alert rules. A PrometheusRule CR is auto-discovered by the
+# kube-prometheus-stack Prometheus (ruleSelectorNilUsesHelmValues: false in
+# values.yaml means the empty ruleSelector matches every rule), so these load
+# automatically on every `make up-obs`. Rules use only metrics that the
+# services actually emit today — the Observability doc's Postgres/Redis/Kafka
+# exporter alerts are omitted because those exporters are not deployed.
+#
+# Prometheus annotation templating (the $value / $labels expressions) is wrapped
+# in Helm raw-string literals so Helm passes it through to Prometheus verbatim.
+#
+# The `release` label keeps the rules selectable even if the selector is ever
+# tightened back to the chart default.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hatch-alerts
+  labels:
+    release: observability
+    app.kubernetes.io/part-of: hatch
+spec:
+  groups:
+    - name: hatch-delivery
+      rules:
+        - alert: HatchHighE2ELatencyCritical
+          expr: histogram_quantile(0.99, sum(rate(hatch_delivery_e2e_latency_seconds_bucket[5m])) by (le)) > 30
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Hatch e2e delivery latency p99 > 30s"
+            description: "{{`p99 deliver_at→delivered latency is {{ $value | humanizeDuration }} (SLA breach).`}}"
+
+        - alert: HatchHighE2ELatencyWarning
+          expr: histogram_quantile(0.95, sum(rate(hatch_delivery_e2e_latency_seconds_bucket[5m])) by (le)) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hatch e2e delivery latency p95 > 10s"
+            description: "{{`p95 deliver_at→delivered latency is {{ $value | humanizeDuration }} (early warning before SLA breach).`}}"
+
+        - alert: HatchCircuitBreakerOpen
+          expr: max by (provider) (hatch_delivery_circuit_breaker_state) == 2
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{`Circuit breaker OPEN for provider {{ $labels.provider }}`}}"
+            description: "{{`Provider {{ $labels.provider }} circuit breaker has been OPEN for >1m — provider degraded.`}}"
+
+        - alert: HatchHighRetryRate
+          expr: |
+            sum(rate(hatch_delivery_retries_total[5m]))
+              / clamp_min(sum(rate(hatch_delivery_sends_total[5m])), 1) > 0.10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hatch retry rate > 10% of sends"
+            description: "{{`Retries are {{ $value | humanizePercentage }} of send volume over 5m — provider instability.`}}"
+
+        - alert: HatchTerminalFailuresSpiking
+          expr: sum(rate(hatch_delivery_failed_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hatch terminal delivery failures occurring"
+            description: "{{`Emails are reaching a terminal failed state ({{ $value | humanize }}/s over 5m).`}}"
+
+        - alert: HatchNoActiveProviderFailures
+          expr: sum(rate(hatch_delivery_failed_total{reason="no_active_providers"}[5m])) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Hatch failures due to no active providers"
+            description: "Deliveries are failing with reason=no_active_providers — client provider misconfiguration."
+
+        - alert: HatchRedisUnavailable
+          expr: sum(rate(hatch_delivery_client_cache_total{result="unavailable"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Hatch Redis cache/idempotency layer unavailable"
+            description: "Client-cache lookups are returning result=unavailable — Redis (cache + idempotency) appears down."
+
+    - name: hatch-scheduler
+      rules:
+        - alert: HatchKafkaProduceFailures
+          expr: sum(rate(hatch_scheduler_kafka_produce_failures_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Scheduler Kafka produce failures on emails.due"
+            description: "The scheduler is failing to produce to emails.due — due emails are not being fired."
+
+    - name: hatch-api
+      rules:
+        - alert: HatchClientRateLimitingSustained
+          expr: sum by (client_id) (rate(hatch_api_rate_limited_total[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{`Client {{ $labels.client_id }} sustained rate limiting`}}"
+            description: "{{`client_id {{ $labels.client_id }} has been rate-limited (429s) continuously for 10m — misconfigured or under attack.`}}"
+
+    - name: hatch-crons
+      rules:
+        - alert: HatchReconciliationStale
+          expr: time() - max(hatch_recon_last_run_timestamp) > 25 * 3600
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Reconciliation cron has not run in >25h"
+            description: "{{`Last successful reconciliation run was {{ $value | humanizeDuration }} ago — stuck rows may be accumulating.`}}"
+
+        - alert: HatchArchivalStale
+          expr: time() - max(hatch_archival_last_run_timestamp) > 35 * 86400
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Partition archival cron has not run in >35d"
+            description: "{{`Last successful archival run was {{ $value | humanizeDuration }} ago — old partitions may be accumulating.`}}"
+
+        - alert: HatchPartitionCountOutOfRange
+          expr: max(hatch_db_active_partitions) < 2 or max(hatch_db_active_partitions) > 6
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "scheduled_emails active partition count out of range"
+            description: "{{`Active partition count is {{ $value }} (expected 2–6) — archival or partition management may be off.`}}"

@@ -1,0 +1,78 @@
+{
+  "uid": "hatch-scheduler",
+  "title": "Hatch — Scheduler Service",
+  "tags": ["hatch"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Hourly poll duration p95 per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(hatch_scheduler_poll_duration_seconds_bucket[15m])) by (le, pod_index))", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Emails loaded per poll per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [ { "refId": "A", "expr": "sum(increase(hatch_scheduler_poll_emails_loaded_total[1h])) by (pod_index)", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Wheel occupied slots per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "targets": [ { "refId": "A", "expr": "hatch_scheduler_wheel_occupied_slots", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Wheel total schedule ids loaded per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "targets": [ { "refId": "A", "expr": "hatch_scheduler_wheel_total_loaded", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka produce latency p95 per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(hatch_scheduler_kafka_produce_duration_seconds_bucket[5m])) by (le, pod_index))", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka produce failures per pod",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "fixed", "fixedColor": "red" } } },
+      "targets": [ { "refId": "A", "expr": "sum(rate(hatch_scheduler_kafka_produce_failures_total[5m])) by (pod_index)", "legendFormat": "pod {{pod_index}}" } ]
+    },
+    {
+      "type": "table",
+      "title": "Pod identity (sanity check)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 21 },
+      "options": { "showHeader": true },
+      "targets": [ { "refId": "A", "expr": "hatch_scheduler_pod_index", "format": "table", "instant": true } ]
+    }
+  ]
+}

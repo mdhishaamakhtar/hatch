@@ -61,6 +61,37 @@ kps:
       resources:
         requests:
           memory: 64Mi
+    # Routing for the Hatch PrometheusRule alerts (templates/prometheus-rules.yaml).
+    # The email receiver is WIRED but uses PLACEHOLDER SMTP settings — no real
+    # credentials are committed. Alerts still fire and are visible in the
+    # Alertmanager UI and in Grafana → Alerting; email delivery only succeeds
+    # once real SMTP values are supplied (see docs/OBSERVABILITY.md). With the
+    # placeholders in place Alertmanager will log SMTP send failures — harmless
+    # on a local cluster.
+    config:
+      global:
+        resolve_timeout: 5m
+        smtp_smarthost: "smtp.example.com:587"
+        smtp_from: "hatch-alerts@example.com"
+        smtp_auth_username: "REPLACE_ME"
+        smtp_auth_password: "REPLACE_ME"
+        smtp_require_tls: true
+      route:
+        group_by: ["alertname", "severity"]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        receiver: hatch-email
+        routes:
+          - matchers:
+              - "severity = critical"
+            receiver: hatch-email
+            repeat_interval: 1h
+      receivers:
+        - name: hatch-email
+          email_configs:
+            - to: "oncall@example.com"
+              send_resolved: true
   grafana:
     adminUser: admin
     adminPassword: admin
@@ -72,6 +103,12 @@ kps:
         enabled: true
       dashboards:
         enabled: true
+        # Map each dashboard ConfigMap's `grafana_folder` annotation onto a
+        # Grafana folder, so the Hatch dashboards land in their own "Hatch"
+        # folder instead of mixing in with the bundled kube-prometheus-stack ones.
+        folderAnnotation: grafana_folder
+        provider:
+          foldersFromFilesStructure: true
     additionalDataSources:
       - name: Loki
         type: loki

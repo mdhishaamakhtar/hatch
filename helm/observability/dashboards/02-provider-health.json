@@ -1,0 +1,90 @@
+{
+  "uid": "hatch-provider-health",
+  "title": "Hatch — Provider Health",
+  "tags": ["hatch"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Provider Send Performance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Send latency p50 per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.50, sum(rate(hatch_delivery_provider_send_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Send latency p95 per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(hatch_delivery_provider_send_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Send latency p99 per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.99, sum(rate(hatch_delivery_provider_send_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Send success rate per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [ { "refId": "A", "expr": "sum(rate(hatch_delivery_sends_total{status=\"success\"}[5m])) by (provider) / clamp_min(sum(rate(hatch_delivery_sends_total[5m])) by (provider), 0.0001)", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Send outcomes per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [ { "refId": "A", "expr": "sum(rate(hatch_delivery_sends_total[5m])) by (provider, status)", "legendFormat": "{{provider}} / {{status}}" } ]
+    },
+    {
+      "type": "row",
+      "title": "Provider Routing State",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Circuit breaker state per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "CLOSED", "color": "green" }, "1": { "text": "HALF_OPEN", "color": "yellow" }, "2": { "text": "OPEN", "color": "red" } } } ] } },
+      "options": { "mergeValues": true },
+      "targets": [ { "refId": "A", "expr": "hatch_delivery_circuit_breaker_state", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Leaky-bucket tokens per provider",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [ { "refId": "A", "expr": "hatch_delivery_leaky_bucket_tokens", "legendFormat": "{{provider}}" } ]
+    }
+  ]
+}

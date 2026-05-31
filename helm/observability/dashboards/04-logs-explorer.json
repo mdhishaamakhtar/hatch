@@ -1,0 +1,78 @@
+{
+  "uid": "hatch-logs-explorer",
+  "title": "Hatch — Logs Explorer (Loki)",
+  "tags": ["hatch"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "loki_ds",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "schedule_id",
+        "label": "schedule_id",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      },
+      {
+        "name": "client_id",
+        "label": "client_id",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "logs",
+      "title": "All ERROR logs (all services)",
+      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{namespace=\"hatch\"} | json | level=`error`" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Logs for a specific schedule_id",
+      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{namespace=\"hatch\"} |= `${schedule_id}`" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Logs for a specific client_id",
+      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{namespace=\"hatch\"} |= `${client_id}`" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Delivery worker — WARN + ERROR",
+      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{namespace=\"hatch\"} | json | service=`delivery-worker` | level=~`warn|error`" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Reconciliation cron — run history",
+      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{namespace=\"hatch\"} | json | service=`reconciliation-cron`" } ]
+    }
+  ]
+}
