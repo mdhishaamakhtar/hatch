@@ -94,6 +94,8 @@ kafka:
   brokerPort: 9092
   controllerPort: 9093
   clusterID: 5L6g3nShT-eMCtK--X86sw
+  topicsJob:
+    enabled: true
   # Topics provisioned by the post-install/post-upgrade Job. The delivery worker
   # produces to the retry tiers on transient failure; the Phase 4 retry consumers
   # drain them.

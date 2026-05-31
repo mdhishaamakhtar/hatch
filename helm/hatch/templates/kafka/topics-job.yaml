@@ -1,4 +1,4 @@
-{{- if .Values.kafka.topics }}
+{{- if and .Values.kafka.topicsJob.enabled .Values.kafka.topics }}
 # Provision every topic listed under .Values.kafka.topics. Idempotent thanks to
 # --if-not-exists, so re-running `make up` is safe. Phase 4 will extend the
 # list with the three retry tiers.

@@ -24,14 +24,15 @@ Status: see [BUILD_STATUS.md](BUILD_STATUS.md). Design docs live on [Notion](htt
 
 ```sh
 cp .env.example .env       # tweak placeholders if you need to
-make up-all                # deploy observability + hatch; migrations run in-cluster
+make up-all                # deploy observability + hatch in three phases
 ```
 
-Migrations run automatically in-cluster via the `db-migrate` hook on every
-`make up` — no port-forward needed. App pods wait for Postgres/Redis/Kafka to be
-reachable before starting, so there's no startup CrashLoopBackOff. The scheduler
-API and Grafana are exposed via `Service type=LoadBalancer` and are reachable on
-`localhost:9021` and `localhost:3000` without `port-forward`.
+`make up` now runs in three phases: infra, jobs, then service pods. Migrations
+and Kafka topic bootstrap run in the middle phase, after Postgres/Redis/Kafka
+are up but before the application pods are created, which removes the race that
+was causing the first reconciliation and partition archival runs to fail. The
+scheduler API and Grafana are exposed via `Service type=LoadBalancer` and are
+reachable on `localhost:9021` and `localhost:3000` without `port-forward`.
 
 ## Lifecycle
 
@@ -41,10 +42,14 @@ target it specifically so observability isn't torn down on every cycle.
 
 | Command | Scope | What it does |
 |---|---|---|
-| `make up` | hatch | Inject secrets, install/upgrade `hatch` (assumes obs is up) |
+| `make up` | hatch | Three-phase `infra -> jobs -> pods` install/upgrade (assumes obs is up) |
+| `make up-infra` | hatch | Bring up Postgres/Redis/Kafka only |
+| `make up-jobs` | hatch | Run DB migrations and Kafka topic bootstrap |
+| `make up-pods` | hatch | Bring up the service pods after jobs complete |
 | `make down` | hatch | Uninstall `hatch` (PVCs kept, obs untouched) |
 | `make restart` | hatch | `down` + `up`, keeps PVCs and obs |
-| `make up-obs` | obs | Install/upgrade `observability` |
+| `make up-obs-crds` | obs | Refresh Prometheus Operator CRDs before observability install/upgrade |
+| `make up-obs` | obs | Refresh CRDs, then install/upgrade `observability` |
 | `make down-obs` | obs | Uninstall `observability` (PVCs kept) |
 | `make up-all` | both | First-time: obs then hatch |
 | `make down-all` | both | Uninstall both releases (PVCs kept) |

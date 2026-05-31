@@ -134,10 +134,56 @@ gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
 deps: ## Pull helm chart dependencies
 	cd helm/observability && $(HELM) dependency update
 
+.PHONY: up-obs-crds
+up-obs-crds: deps ## Refresh Prometheus Operator CRDs for observability
+	@./scripts/apply-observability-crds.sh
+
 .PHONY: up
-up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs is already up.
+up: ## Deploy hatch in three phases: infra, jobs, then service pods. Assumes obs is already up.
+	$(MAKE) up-infra
+	$(MAKE) up-jobs
+	$(MAKE) up-pods
+
+.PHONY: up-infra
+up-infra: ## Bring up hatch infra only (postgres/redis/kafka)
 	@./scripts/inject-secrets.sh
 	@./scripts/sync-migrations.sh
+	@echo "→ deploying hatch infra (postgres, redis, kafka)"; \
+	  $(HELM) upgrade --install hatch ./helm/hatch \
+	    --namespace $(NS_HATCH) --create-namespace \
+	    --set api.enabled=false \
+	    --set scheduler.enabled=false \
+	    --set deliveryWorker.enabled=false \
+	    --set retryConsumer.enabled=false \
+	    --set reconciliationCron.enabled=false \
+	    --set partitionArchival.enabled=false \
+	    --set migrations.enabled=false \
+	    --set kafka.topicsJob.enabled=false \
+	    --wait --wait-for-jobs --timeout 5m
+	@echo
+	@echo "Hatch infra is up. Next: make up-jobs"
+
+.PHONY: up-jobs
+up-jobs: ## Bring up hatch jobs only (migrations + topic bootstrap)
+	@./scripts/inject-secrets.sh
+	@./scripts/sync-migrations.sh
+	@echo "→ deploying hatch jobs (db migrations, kafka topics)"; \
+	  $(HELM) upgrade --install hatch ./helm/hatch \
+	    --namespace $(NS_HATCH) --create-namespace \
+	    --set api.enabled=false \
+	    --set scheduler.enabled=false \
+	    --set deliveryWorker.enabled=false \
+	    --set retryConsumer.enabled=false \
+	    --set reconciliationCron.enabled=false \
+	    --set partitionArchival.enabled=false \
+	    --set migrations.enabled=true \
+	    --set kafka.topicsJob.enabled=true \
+	    --wait --wait-for-jobs --timeout 5m
+	@echo
+	@echo "Hatch jobs are up. Next: make up-pods"
+
+.PHONY: up-pods
+up-pods: ## Bring up hatch service pods only (api, scheduler, workers, crons)
 	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
 	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
 	 DW_TAG=$$([ -f .delivery-worker-image-tag ] && cat .delivery-worker-image-tag || echo dev); \
@@ -147,13 +193,21 @@ up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs
 	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG, retry-consumer with hatch/retry-consumer:$$RC_TAG, reconciliation-cron with hatch/reconciliation-cron:$$RECON_TAG, partition-archival with hatch/partition-archival:$$ARCH_TAG"; \
 	  $(HELM) upgrade --install hatch ./helm/hatch \
 	    --namespace $(NS_HATCH) --create-namespace \
+	    --set api.enabled=true \
 	    --set api.image=hatch/api:$$API_TAG \
+	    --set scheduler.enabled=true \
 	    --set scheduler.image=hatch/scheduler:$$SCHED_TAG \
+	    --set deliveryWorker.enabled=true \
 	    --set deliveryWorker.image=hatch/delivery-worker:$$DW_TAG \
+	    --set retryConsumer.enabled=true \
 	    --set retryConsumer.image=hatch/retry-consumer:$$RC_TAG \
+	    --set reconciliationCron.enabled=true \
 	    --set reconciliationCron.image=hatch/reconciliation-cron:$$RECON_TAG \
+	    --set partitionArchival.enabled=true \
 	    --set partitionArchival.image=hatch/partition-archival:$$ARCH_TAG \
-	    --wait --timeout 5m
+	    --set migrations.enabled=false \
+	    --set kafka.topicsJob.enabled=false \
+	    --wait --wait-for-jobs --timeout 5m
 	@echo
 	@echo "Hatch up. Port-forward with: make port-forward"
 
@@ -167,9 +221,12 @@ restart: ## Restart hatch only (down + up, keeps PVCs and obs)
 	$(MAKE) up
 
 .PHONY: up-obs
-up-obs: deps ## Deploy observability stack (grafana/prom/loki/tempo)
+up-obs: ## Deploy observability stack (grafana/prom/loki/tempo)
+	$(MAKE) up-obs-crds
 	$(HELM) upgrade --install observability ./helm/observability \
 	  --namespace $(NS_OBS) --create-namespace \
+	  --skip-crds \
+	  --set kps.crds.enabled=false \
 	  --wait --timeout 10m
 
 .PHONY: down-obs
@@ -177,7 +234,9 @@ down-obs: ## Tear down observability helm release (keeps PVCs)
 	-$(HELM) uninstall observability -n $(NS_OBS)
 
 .PHONY: up-all
-up-all: up-obs up ## First-time setup: deploy obs then hatch
+up-all: ## First-time setup: deploy obs then hatch
+	$(MAKE) up-obs
+	$(MAKE) up
 
 .PHONY: down-all
 down-all: down down-obs ## Tear down both helm releases (keeps PVCs)
