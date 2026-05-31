@@ -18,7 +18,7 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: build-api build-scheduler build-delivery-worker build-retry-consumer ## Build all Hatch service Docker images
+build: build-api build-scheduler build-delivery-worker build-retry-consumer build-reconciliation-cron build-partition-archival ## Build all Hatch service Docker images
 
 .PHONY: build-api
 build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
@@ -47,6 +47,20 @@ build-retry-consumer: ## Build the retry-consumer Docker image with a unique tag
 	  docker build -f Dockerfile.retry-consumer -t hatch/retry-consumer:$$TAG -t hatch/retry-consumer:dev . && \
 	  echo $$TAG > .retry-consumer-image-tag && \
 	  echo "→ tagged: hatch/retry-consumer:$$TAG (also hatch/retry-consumer:dev)"
+
+.PHONY: build-reconciliation-cron
+build-reconciliation-cron: ## Build the reconciliation-cron Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.reconciliation-cron -t hatch/reconciliation-cron:$$TAG -t hatch/reconciliation-cron:dev . && \
+	  echo $$TAG > .reconciliation-cron-image-tag && \
+	  echo "→ tagged: hatch/reconciliation-cron:$$TAG (also hatch/reconciliation-cron:dev)"
+
+.PHONY: build-partition-archival
+build-partition-archival: ## Build the partition-archival Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.partition-archival -t hatch/partition-archival:$$TAG -t hatch/partition-archival:dev . && \
+	  echo $$TAG > .partition-archival-image-tag && \
+	  echo "→ tagged: hatch/partition-archival:$$TAG (also hatch/partition-archival:dev)"
 
 .PHONY: build-verify
 build-verify: ## Build the in-cluster verify Docker image with a unique tag
@@ -96,6 +110,22 @@ run-retry-consumer: ## Run retry-consumer locally against HOST_* brokers (no k8s
 	  OTLP_ENDPOINT="" \
 	  go run ./cmd/retry-consumer
 
+.PHONY: run-reconciliation-cron
+run-reconciliation-cron: ## Run reconciliation-cron locally against HOST_* DSNs (no k8s)
+	@set -a; . ./.env; set +a; \
+	  DATABASE_URL="$$HOST_DATABASE_URL" \
+	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
+	  OTLP_ENDPOINT="" \
+	  go run ./cmd/reconciliation-cron
+
+.PHONY: run-partition-archival
+run-partition-archival: ## Run partition-archival locally against HOST_* DSNs (no k8s)
+	@set -a; . ./.env; set +a; \
+	  DATABASE_URL="$$HOST_DATABASE_URL" \
+	  ARCHIVE_DIR="$${ARCHIVE_DIR:-./.local-archive}" \
+	  OTLP_ENDPOINT="" \
+	  go run ./cmd/partition-archival
+
 .PHONY: gen-provider-key
 gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
 	@go run ./cmd/tinkgen
@@ -112,13 +142,17 @@ up: ## Deploy hatch (app stack: postgres/kafka/redis/api/scheduler). Assumes obs
 	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
 	 DW_TAG=$$([ -f .delivery-worker-image-tag ] && cat .delivery-worker-image-tag || echo dev); \
 	 RC_TAG=$$([ -f .retry-consumer-image-tag ] && cat .retry-consumer-image-tag || echo dev); \
-	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG, retry-consumer with hatch/retry-consumer:$$RC_TAG"; \
+	 RECON_TAG=$$([ -f .reconciliation-cron-image-tag ] && cat .reconciliation-cron-image-tag || echo dev); \
+	 ARCH_TAG=$$([ -f .partition-archival-image-tag ] && cat .partition-archival-image-tag || echo dev); \
+	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG, retry-consumer with hatch/retry-consumer:$$RC_TAG, reconciliation-cron with hatch/reconciliation-cron:$$RECON_TAG, partition-archival with hatch/partition-archival:$$ARCH_TAG"; \
 	  $(HELM) upgrade --install hatch ./helm/hatch \
 	    --namespace $(NS_HATCH) --create-namespace \
 	    --set api.image=hatch/api:$$API_TAG \
 	    --set scheduler.image=hatch/scheduler:$$SCHED_TAG \
 	    --set deliveryWorker.image=hatch/delivery-worker:$$DW_TAG \
 	    --set retryConsumer.image=hatch/retry-consumer:$$RC_TAG \
+	    --set reconciliationCron.image=hatch/reconciliation-cron:$$RECON_TAG \
+	    --set partitionArchival.image=hatch/partition-archival:$$ARCH_TAG \
 	    --wait --timeout 5m
 	@echo
 	@echo "Hatch up. Port-forward with: make port-forward"

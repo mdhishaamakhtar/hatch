@@ -1,0 +1,84 @@
+{{- if .Values.partitionArchival.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: partition-archival
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: partition-archival
+spec:
+  replicas: {{ .Values.partitionArchival.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: partition-archival
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: hatch
+        app.kubernetes.io/component: partition-archival
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: {{ .Values.partitionArchival.adminPort | quote }}
+    spec:
+      # fsGroup lets the distroless nonroot user (65532) write the CSV exports to
+      # the emptyDir mounted at /archive.
+      securityContext:
+        fsGroup: 65532
+      # The cron only needs Postgres (no Kafka/Redis), so gate startup on it.
+      initContainers:
+        - name: wait-for-deps
+          image: {{ .Values.initWait.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until nc -w 2 postgres {{ .Values.postgres.servicePort }} </dev/null 2>/dev/null; do
+                echo "waiting for postgres:{{ .Values.postgres.servicePort }}…"
+                sleep 2
+              done
+              echo "postgres:{{ .Values.postgres.servicePort }} reachable"
+      volumes:
+        # Cold-storage destination for archived partitions. emptyDir for local dev;
+        # a PVC or an S3/GCS sync target in production.
+        - name: archive
+          emptyDir: {}
+      containers:
+        - name: partition-archival
+          image: {{ .Values.partitionArchival.image | quote }}
+          imagePullPolicy: {{ .Values.partitionArchival.imagePullPolicy | default "Always" | quote }}
+          ports:
+            - containerPort: {{ .Values.partitionArchival.adminPort }}
+              name: admin
+          envFrom:
+            - secretRef:
+                name: hatch-secrets
+          env:
+            - name: ARCHIVAL_ADMIN_PORT
+              value: {{ .Values.partitionArchival.adminPort | quote }}
+            - name: ARCHIVAL_INTERVAL
+              value: {{ .Values.partitionArchival.interval | quote }}
+            - name: ARCHIVE_DIR
+              value: /archive
+          volumeMounts:
+            - name: archive
+              mountPath: /archive
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+{{- end }}

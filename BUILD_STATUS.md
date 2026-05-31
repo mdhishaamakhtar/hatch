@@ -1,7 +1,7 @@
 # Build Status
 
-Current phase: **Phase 4 — Retry Consumers (complete ✅)**
-Next up: **Phase 5 — Reconciliation + Partition Archival crons**
+Current phase: **Phase 5 — Reconciliation + Partition Archival crons (complete ✅)**
+Next up: **Phase 6 — Grafana dashboards + Alertmanager wiring**
 
 | Phase | Title | Status |
 |------:|---|---|
@@ -10,8 +10,8 @@ Next up: **Phase 5 — Reconciliation + Partition Archival crons**
 | 2 | Scheduler Service (timer wheel, bbolt, Kafka produce, observability APIs) | ✅ done |
 | 3 | Delivery Workers (batch consumer, provider router, mock + Resend providers, idempotency, retry-tier produce) | ✅ done |
 | 4 | Retry Consumers (3 tier drain consumers, re-enqueue to emails.due, instrumentation) | ✅ done |
-| 5 | Reconciliation + Partition Archival crons | ⏳ next |
-| 6 | Grafana dashboards + Alertmanager wiring | ⏸ pending |
+| 5 | Reconciliation + Partition Archival crons (recover stranded rows, archive fully-past partitions) | ✅ done |
+| 6 | Grafana dashboards + Alertmanager wiring | ⏳ next |
 
 Verification is a single cumulative audit: `make verify` runs a host prelude
 (build/vet/test/sqlc + pod status) then an in-cluster Job that checks
