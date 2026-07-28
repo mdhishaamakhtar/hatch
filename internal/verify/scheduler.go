@@ -80,7 +80,7 @@ func (v *Verifier) checkTopic(ctx context.Context) {
 // checkShardIdentity confirms each scheduler pod reports its own ordinal and
 // the full replica count.
 func (v *Verifier) checkShardIdentity(ctx context.Context) {
-	for i := 0; i < v.cfg.SchedReplicas; i++ {
+	for i := range v.cfg.SchedReplicas {
 		s, err := v.fetchStats(ctx, i)
 		if err != nil {
 			v.rep.Failf("scheduler-%d stats: %v", i, err)
@@ -126,7 +126,7 @@ func (v *Verifier) checkScheduleToKafka(ctx context.Context) {
 
 	// Trigger an immediate poll on every shard so the wheel picks up the rows
 	// we just created (the hourly poller would otherwise not see them for ~1h).
-	for i := 0; i < v.cfg.SchedReplicas; i++ {
+	for i := range v.cfg.SchedReplicas {
 		resp, err := v.do(ctx, http.MethodPost, v.cfg.SchedulerURL(i)+"/internal/poll", v.cfg.AdminKey, nil)
 		v.rep.Check(err == nil && resp.code == http.StatusAccepted,
 			fmt.Sprintf("POST scheduler-%d /internal/poll → 202", i),
@@ -136,7 +136,7 @@ func (v *Verifier) checkScheduleToKafka(ctx context.Context) {
 	// Wait until every shard has loaded at least one schedule.
 	loadedAll := retry(ctx, 30, 2*time.Second, func() bool {
 		hits := 0
-		for i := 0; i < v.cfg.SchedReplicas; i++ {
+		for i := range v.cfg.SchedReplicas {
 			if s, err := v.fetchStats(ctx, i); err == nil && s.TotalLoaded > 0 {
 				hits++
 			}

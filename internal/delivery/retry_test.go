@@ -1,35 +1,28 @@
 package delivery
 
-import "testing"
+import (
+	"testing"
 
-func TestTopicForRetry(t *testing.T) {
-	cases := map[int]string{
-		1: TopicRetry1Min,
-		2: TopicRetry5Min,
-		3: TopicRetry30Min,
-		4: TopicRetry30Min, // anything beyond tier 3 stays on 30min
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
+)
+
+func TestTierForClampsToTheLastTier(t *testing.T) {
+	cases := []struct {
+		retryCount int
+		wantLabel  string
+		wantTopic  string
+	}{
+		{1, "1min", kafka.TopicRetry1Min},
+		{2, "5min", kafka.TopicRetry5Min},
+		{3, "30min", kafka.TopicRetry30Min},
+		{9, "30min", kafka.TopicRetry30Min}, // anything past the last tier stays there
+		{0, "1min", kafka.TopicRetry1Min},   // defensive: never index below the first
 	}
-	for n, want := range cases {
-		if got := topicForRetry(n); got != want {
-			t.Errorf("topicForRetry(%d) = %q, want %q", n, got, want)
+	for _, c := range cases {
+		label, topic := tierFor(c.retryCount)
+		if label != c.wantLabel || topic != c.wantTopic {
+			t.Errorf("tierFor(%d) = (%q, %q), want (%q, %q)",
+				c.retryCount, label, topic, c.wantLabel, c.wantTopic)
 		}
-	}
-}
-
-func TestRetryTierLabel(t *testing.T) {
-	cases := map[int]string{1: "1min", 2: "5min", 3: "30min", 9: "30min"}
-	for n, want := range cases {
-		if got := retryTierLabel(n); got != want {
-			t.Errorf("retryTierLabel(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
-func TestScheduleIDFromValue(t *testing.T) {
-	if got := scheduleIDFromValue([]byte(`{"schedule_id":"abc-123"}`)); got != "abc-123" {
-		t.Errorf("got %q, want abc-123", got)
-	}
-	if got := scheduleIDFromValue([]byte(`not json`)); got != "" {
-		t.Errorf("malformed payload should yield empty, got %q", got)
 	}
 }

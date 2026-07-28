@@ -8,13 +8,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
-	"os"
-	"os/signal"
-	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/mdhishaamakhtar/hatch/gen"
@@ -23,27 +17,14 @@ import (
 	"github.com/mdhishaamakhtar/hatch/pkg/crypto"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	hkafka "github.com/mdhishaamakhtar/hatch/pkg/kafka"
-	"github.com/mdhishaamakhtar/hatch/pkg/logger"
 	"github.com/mdhishaamakhtar/hatch/pkg/provider"
 	"github.com/mdhishaamakhtar/hatch/pkg/redis"
-	"github.com/mdhishaamakhtar/hatch/pkg/tracer"
+	"github.com/mdhishaamakhtar/hatch/pkg/service"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
-func main() {
-	// fmt is only acceptable for events BEFORE the logger exists.
-	lg, err := logger.New("delivery-worker")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "logger init failed:", err)
-		os.Exit(1)
-	}
-	defer func() { _ = lg.Sync() }()
-
-	if err := run(lg); err != nil {
-		lg.Fatal("delivery-worker startup failed", zap.Error(err))
-	}
-}
+func main() { service.Main("delivery-worker", run) }
 
 func run(lg *zap.Logger) error {
 	cfg, err := config.Load[delivery.Config]()
@@ -51,20 +32,14 @@ func run(lg *zap.Logger) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := service.SignalContext()
 	defer cancel()
 
-	tracerShutdown, err := tracer.Init(ctx, "delivery-worker", cfg.OTLPEndpoint)
+	flushTraces, err := service.InitTracer(ctx, lg, "delivery-worker", cfg.OTLPEndpoint)
 	if err != nil {
-		return fmt.Errorf("tracer: %w", err)
+		return err
 	}
-	defer func() {
-		shutdownCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
-		defer c()
-		if err := tracerShutdown(shutdownCtx); err != nil {
-			lg.Warn("tracer shutdown", zap.Error(err))
-		}
-	}()
+	defer flushTraces()
 	tr := otel.Tracer("delivery-worker")
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
@@ -84,7 +59,7 @@ func run(lg *zap.Logger) error {
 		return fmt.Errorf("cipher: %w", err)
 	}
 
-	consumer, err := hkafka.NewConsumer(cfg.Brokers(), cfg.ConsumerGroup, []string{delivery.TopicEmailsDue}, lg)
+	consumer, err := hkafka.NewConsumer(cfg.Brokers(), cfg.ConsumerGroup, []string{hkafka.TopicEmailsDue}, lg)
 	if err != nil {
 		return fmt.Errorf("kafka consumer: %w", err)
 	}
@@ -95,7 +70,6 @@ func run(lg *zap.Logger) error {
 		return fmt.Errorf("kafka producer: %w", err)
 	}
 	defer prodCl.Close()
-	producer := delivery.NewKgoProducer(prodCl)
 
 	// Vendor factories: only the providers implemented this phase. Resend uses
 	// per-client API keys decrypted from the cache; mock ignores credentials.
@@ -110,54 +84,39 @@ func run(lg *zap.Logger) error {
 	)
 
 	queries := gen.New(pool)
-	cache := delivery.NewClientCache(rc, queries, cfg.ClientCacheTTL, lg)
-	idem := delivery.NewIdempotency(rc, cfg.IdempotencyTTL)
-	proc := delivery.NewProcessor(lg, queries, cache, idem, router, producer, tr, cfg.MaxRetries)
+	proc := delivery.NewProcessor(
+		lg, queries,
+		delivery.NewClientCache(rc, queries, cfg.ClientCacheTTL, lg),
+		delivery.NewIdempotency(rc, cfg.IdempotencyTTL),
+		router,
+		hkafka.NewRecordProducer(prodCl),
+		tr, cfg.MaxRetries,
+	)
+
+	// Two cancellation domains. SIGTERM cancels ctx, which stops polling for new
+	// work; workCtx outlives it by the drain budget so the batch already in
+	// flight finishes its sends and commits its offsets. Collapsing these into
+	// one context makes every deploy that lands mid-send strand a row in
+	// `processing` with its idempotency key already claimed.
+	workCtx, stopWork := context.WithCancel(context.Background())
+	defer stopWork()
+	go func() {
+		<-ctx.Done()
+		time.AfterFunc(cfg.ShutdownTimeout, stopWork)
+	}()
 
 	// G1 → G2: one batch of lookahead. ackC unbuffered: the commit can't race
 	// ahead of processing.
 	batchC := make(chan delivery.Batch, 1)
 	ackC := make(chan struct{})
 
-	go delivery.RunConsumer(ctx, lg, consumer, cfg.BatchSize, batchC, ackC)
-	go proc.Run(ctx, batchC, ackC)
+	go delivery.RunConsumer(ctx, workCtx, lg, consumer, cfg.BatchSize, batchC, ackC)
+	go proc.Run(workCtx, batchC, ackC)
 	go delivery.RunRouterTicker(ctx, router, cfg.ProviderTick)
 
-	srv := delivery.NewServer(lg, pool, rc)
-	httpServer := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.AdminPort),
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	listenErr := make(chan error, 1)
-	go func() {
-		lg.Info("delivery-worker listening",
-			zap.Int("admin_port", cfg.AdminPort),
-			zap.String("consumer_group", cfg.ConsumerGroup),
-			zap.Int("batch_size", cfg.BatchSize),
-		)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			listenErr <- err
-		}
-		close(listenErr)
-	}()
-
-	select {
-	case err := <-listenErr:
-		return fmt.Errorf("http listen: %w", err)
-	case <-ctx.Done():
-		lg.Info("shutdown signal received, draining")
-	}
-
-	shutdownCtx, c := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutMS)*time.Millisecond)
-	defer c()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("http shutdown: %w", err)
-	}
-	lg.Info("delivery-worker stopped cleanly")
-	return nil
+	return service.Serve(ctx, lg, "delivery-worker", cfg.AdminPort,
+		delivery.AdminHandler(pool, rc), cfg.ShutdownTimeout,
+		zap.String("consumer_group", cfg.ConsumerGroup),
+		zap.Int("batch_size", cfg.BatchSize),
+	)
 }

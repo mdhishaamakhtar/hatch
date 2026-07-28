@@ -67,13 +67,14 @@ func (q *Queries) GetClientForDelivery(ctx context.Context, id []byte) (bool, er
 	return is_active, err
 }
 
-const markCancelled = `-- name: MarkCancelled :exec
+const markCancelled = `-- name: MarkCancelled :execrows
 UPDATE scheduled_emails
 SET status = 'cancelled',
     failure_reason = $3,
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
+  AND status = 'processing'
 `
 
 type MarkCancelledParams struct {
@@ -82,18 +83,22 @@ type MarkCancelledParams struct {
 	FailureReason *string            `db:"failure_reason" json:"failure_reason"`
 }
 
-func (q *Queries) MarkCancelled(ctx context.Context, arg MarkCancelledParams) error {
-	_, err := q.db.Exec(ctx, markCancelled, arg.ID, arg.DeliverAt, arg.FailureReason)
-	return err
+func (q *Queries) MarkCancelled(ctx context.Context, arg MarkCancelledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markCancelled, arg.ID, arg.DeliverAt, arg.FailureReason)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markDelivered = `-- name: MarkDelivered :exec
+const markDelivered = `-- name: MarkDelivered :execrows
 UPDATE scheduled_emails
 SET status = 'delivered',
     last_provider = $3,
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
+  AND status = 'processing'
 `
 
 type MarkDeliveredParams struct {
@@ -102,12 +107,15 @@ type MarkDeliveredParams struct {
 	LastProvider *string            `db:"last_provider" json:"last_provider"`
 }
 
-func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error {
-	_, err := q.db.Exec(ctx, markDelivered, arg.ID, arg.DeliverAt, arg.LastProvider)
-	return err
+func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDelivered, arg.ID, arg.DeliverAt, arg.LastProvider)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markFailed = `-- name: MarkFailed :exec
+const markFailed = `-- name: MarkFailed :execrows
 UPDATE scheduled_emails
 SET status = 'failed',
     last_provider = $3,
@@ -115,6 +123,7 @@ SET status = 'failed',
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
+  AND status = 'processing'
 `
 
 type MarkFailedParams struct {
@@ -124,22 +133,27 @@ type MarkFailedParams struct {
 	FailureReason *string            `db:"failure_reason" json:"failure_reason"`
 }
 
-func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) error {
-	_, err := q.db.Exec(ctx, markFailed,
+func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markFailed,
 		arg.ID,
 		arg.DeliverAt,
 		arg.LastProvider,
 		arg.FailureReason,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markProcessing = `-- name: MarkProcessing :exec
+const markProcessing = `-- name: MarkProcessing :execrows
+
 UPDATE scheduled_emails
 SET status = 'processing',
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
+  AND status IN ('pending', 'processing', 'retrying')
 `
 
 type MarkProcessingParams struct {
@@ -147,12 +161,20 @@ type MarkProcessingParams struct {
 	DeliverAt pgtype.Timestamptz `db:"deliver_at" json:"deliver_at"`
 }
 
-func (q *Queries) MarkProcessing(ctx context.Context, arg MarkProcessingParams) error {
-	_, err := q.db.Exec(ctx, markProcessing, arg.ID, arg.DeliverAt)
-	return err
+// Every MarkX below guards the transition with a status predicate and returns
+// its row count (:execrows), so terminal states are sticky: a duplicate
+// emails.due record for a delivered/failed/cancelled row, or a cancel that
+// landed mid-send, changes 0 rows instead of silently rewriting the outcome.
+// The caller treats 0 rows as "state moved under me — log and stop".
+func (q *Queries) MarkProcessing(ctx context.Context, arg MarkProcessingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markProcessing, arg.ID, arg.DeliverAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markRetrying = `-- name: MarkRetrying :exec
+const markRetrying = `-- name: MarkRetrying :execrows
 UPDATE scheduled_emails
 SET status = 'retrying',
     retry_count = retry_count + 1,
@@ -161,6 +183,7 @@ SET status = 'retrying',
     updated_at = now()
 WHERE id = $1
   AND deliver_at = $2
+  AND status = 'processing'
 `
 
 type MarkRetryingParams struct {
@@ -170,12 +193,15 @@ type MarkRetryingParams struct {
 	FailureReason *string            `db:"failure_reason" json:"failure_reason"`
 }
 
-func (q *Queries) MarkRetrying(ctx context.Context, arg MarkRetryingParams) error {
-	_, err := q.db.Exec(ctx, markRetrying,
+func (q *Queries) MarkRetrying(ctx context.Context, arg MarkRetryingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRetrying,
 		arg.ID,
 		arg.DeliverAt,
 		arg.LastProvider,
 		arg.FailureReason,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

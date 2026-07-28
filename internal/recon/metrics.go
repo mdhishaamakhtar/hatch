@@ -6,7 +6,7 @@ import "github.com/mdhishaamakhtar/hatch/pkg/metrics"
 // namespace and the Build Plan §Reconciliation Instrumentation: rows recovered
 // per pass, run duration, and the last-run timestamp the staleness alert watches.
 var (
-	mRowsRecovered = metrics.NewCounter(
+	mRowsRecovered = metrics.NewCounterVec(
 		"recon", "rows_recovered_total",
 		"Stuck rows recovered by reconciliation and re-enqueued to emails.due, by pass.",
 		"pass", // pass1 | pass2

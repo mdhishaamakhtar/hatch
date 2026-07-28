@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -71,8 +72,8 @@ func TestReconcileOnceProducesRecoveredIDs(t *testing.T) {
 
 	wantIDs := map[string]bool{id1.String(): true, id2.String(): true, id3.String(): true}
 	for _, r := range fp.got {
-		if r.Topic != TopicEmailsDue {
-			t.Errorf("topic = %q, want %q", r.Topic, TopicEmailsDue)
+		if r.Topic != kafka.TopicEmailsDue {
+			t.Errorf("topic = %q, want %q", r.Topic, kafka.TopicEmailsDue)
 		}
 		if len(r.Key) != 16 {
 			t.Errorf("key len = %d, want 16-byte binary uuid", len(r.Key))
@@ -102,14 +103,6 @@ func TestReconcileOncePass1Error(t *testing.T) {
 	}
 	if len(fp.got) != 0 {
 		t.Fatalf("produced %d records on pass1 failure, want 0", len(fp.got))
-	}
-}
-
-func TestDuePayload(t *testing.T) {
-	got := string(duePayload("abc-123"))
-	want := `{"schedule_id":"abc-123"}`
-	if got != want {
-		t.Errorf("duePayload = %s, want %s", got, want)
 	}
 }
 

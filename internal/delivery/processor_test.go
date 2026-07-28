@@ -3,11 +3,13 @@ package delivery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mdhishaamakhtar/hatch/gen"
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 	"github.com/mdhishaamakhtar/hatch/pkg/provider"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -16,8 +18,14 @@ import (
 
 // --- fakes ---
 
+// fakeStore records every status write. rowsAffected simulates a guarded UPDATE
+// matching nothing, which is how a lost race presents itself.
 type fakeStore struct {
-	rows      []gen.ScheduledEmail
+	rows         []gen.ScheduledEmail
+	fetchErr     error
+	rowsAffected int64 // 0 in the zero value means "use 1"; see affected()
+	loseRace     bool
+
 	processed int
 	delivered []gen.MarkDeliveredParams
 	retrying  []gen.MarkRetryingParams
@@ -25,32 +33,44 @@ type fakeStore struct {
 	cancelled []gen.MarkCancelledParams
 }
 
+func (f *fakeStore) affected() (int64, error) {
+	if f.loseRace {
+		return 0, nil
+	}
+	return 1, nil
+}
+
 func (f *fakeStore) BatchFetchSchedules(context.Context, [][]byte) ([]gen.ScheduledEmail, error) {
-	return f.rows, nil
+	return f.rows, f.fetchErr
 }
-func (f *fakeStore) MarkProcessing(context.Context, gen.MarkProcessingParams) error {
+func (f *fakeStore) MarkProcessing(context.Context, gen.MarkProcessingParams) (int64, error) {
 	f.processed++
-	return nil
+	return f.affected()
 }
-func (f *fakeStore) MarkDelivered(_ context.Context, a gen.MarkDeliveredParams) error {
+func (f *fakeStore) MarkDelivered(_ context.Context, a gen.MarkDeliveredParams) (int64, error) {
 	f.delivered = append(f.delivered, a)
-	return nil
+	return f.affected()
 }
-func (f *fakeStore) MarkRetrying(_ context.Context, a gen.MarkRetryingParams) error {
+func (f *fakeStore) MarkRetrying(_ context.Context, a gen.MarkRetryingParams) (int64, error) {
 	f.retrying = append(f.retrying, a)
-	return nil
+	return f.affected()
 }
-func (f *fakeStore) MarkFailed(_ context.Context, a gen.MarkFailedParams) error {
+func (f *fakeStore) MarkFailed(_ context.Context, a gen.MarkFailedParams) (int64, error) {
 	f.failed = append(f.failed, a)
-	return nil
+	return f.affected()
 }
-func (f *fakeStore) MarkCancelled(_ context.Context, a gen.MarkCancelledParams) error {
+func (f *fakeStore) MarkCancelled(_ context.Context, a gen.MarkCancelledParams) (int64, error) {
 	f.cancelled = append(f.cancelled, a)
-	return nil
+	return f.affected()
 }
 func (f *fakeStore) GetClientForDelivery(context.Context, []byte) (bool, error) { return true, nil }
 func (f *fakeStore) ListClientActiveProviders(context.Context, []byte) ([]gen.ListClientActiveProvidersRow, error) {
 	return nil, nil
+}
+
+// terminalWrites counts every status write that would end the row's life.
+func (f *fakeStore) terminalWrites() int {
+	return len(f.delivered) + len(f.failed) + len(f.cancelled) + len(f.retrying)
 }
 
 type fakeCache struct {
@@ -61,22 +81,28 @@ type fakeCache struct {
 func (f fakeCache) Get(context.Context, []byte) (clientInfo, error) { return f.info, f.err }
 
 type fakeIdem struct {
-	acquired bool
-	err      error
+	claim     claimState
+	err       error
+	markCalls int
+	markErr   error
 }
 
-func (f fakeIdem) Acquire(context.Context, string, int) (bool, error) { return f.acquired, f.err }
+func (f *fakeIdem) Acquire(context.Context, string, int) (claimState, error) {
+	return f.claim, f.err
+}
+
+func (f *fakeIdem) MarkSent(context.Context, string, int) error {
+	f.markCalls++
+	return f.markErr
+}
 
 type fakeRouter struct {
-	vendor  string
-	ok      bool
-	sendErr error
-	sends   int
+	selection Selection
+	sendErr   error
+	sends     int
 }
 
-func (f *fakeRouter) Select(string, []cachedProvider, string) (string, []byte, bool) {
-	return f.vendor, nil, f.ok
-}
+func (f *fakeRouter) Select(string, []cachedProvider, string) Selection { return f.selection }
 func (f *fakeRouter) Send(context.Context, string, string, []byte, provider.Email) error {
 	f.sends++
 	return f.sendErr
@@ -91,16 +117,16 @@ func (f *fakeProducer) Produce(_ context.Context, r *kgo.Record) error {
 
 // --- helpers ---
 
-func testRow(retry int16, status gen.ScheduleStatus) gen.ScheduledEmail {
-	id := make([]byte, 16)
-	id[0] = 0x11
-	cid := make([]byte, 16)
-	cid[0] = 0x22
+func testRow(retryCount int16, status gen.ScheduleStatus) gen.ScheduledEmail {
+	scheduleID := make([]byte, 16)
+	scheduleID[0] = 0x11
+	clientID := make([]byte, 16)
+	clientID[0] = 0x22
 	return gen.ScheduledEmail{
-		ID:             id,
-		ClientID:       cid,
+		ID:             scheduleID,
+		ClientID:       clientID,
 		Status:         status,
-		RetryCount:     retry,
+		RetryCount:     retryCount,
 		DeliverAt:      pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		RecipientEmail: "to@example.com",
 		FromEmail:      "from@example.com",
@@ -109,160 +135,361 @@ func testRow(retry int16, status gen.ScheduleStatus) gen.ScheduledEmail {
 	}
 }
 
-func newTestProcessor(store *fakeStore, cache fakeCache, idem fakeIdem, router *fakeRouter, prod *fakeProducer) *Processor {
-	return NewProcessor(zap.NewNop(), store, cache, idem, router, prod, noop.NewTracerProvider().Tracer("test"), 3)
+// harness bundles the processor with the fakes the assertions read back.
+type harness struct {
+	proc   *Processor
+	store  *fakeStore
+	idem   *fakeIdem
+	router *fakeRouter
+	prod   *fakeProducer
 }
 
-func activeMock() clientInfo {
-	return clientInfo{IsActive: true, Providers: provs("mock")}
-}
-
-// --- tests ---
-
-func TestProcessOneDelivered(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true}
-	prod := &fakeProducer{}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: true}, router, prod)
-
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
-
-	if len(store.delivered) != 1 {
-		t.Fatalf("want 1 delivered, got %d", len(store.delivered))
+// newHarness builds a processor whose happy path succeeds; each test overrides
+// only the fake it cares about.
+func newHarness(t *testing.T, opts ...func(*harness)) *harness {
+	t.Helper()
+	h := &harness{
+		store:  &fakeStore{},
+		idem:   &fakeIdem{claim: claimFree},
+		router: &fakeRouter{selection: Selection{Outcome: SelectOK, Vendor: "mock"}},
+		prod:   &fakeProducer{},
 	}
-	if got := deref(store.delivered[0].LastProvider); got != "mock" {
+	for _, opt := range opts {
+		opt(h)
+	}
+	h.proc = NewProcessor(zap.NewNop(), h.store, fakeCache{info: activeClient("mock")},
+		h.idem, h.router, h.prod, noop.NewTracerProvider().Tracer("test"), 3)
+	return h
+}
+
+// newHarnessWithCache is newHarness with a specific client-cache result.
+func newHarnessWithCache(t *testing.T, cache fakeCache, opts ...func(*harness)) *harness {
+	t.Helper()
+	h := &harness{
+		store:  &fakeStore{},
+		idem:   &fakeIdem{claim: claimFree},
+		router: &fakeRouter{selection: Selection{Outcome: SelectOK, Vendor: "mock"}},
+		prod:   &fakeProducer{},
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	h.proc = NewProcessor(zap.NewNop(), h.store, cache, h.idem, h.router, h.prod,
+		noop.NewTracerProvider().Tracer("test"), 3)
+	return h
+}
+
+func activeClient(vendors ...string) clientInfo {
+	return clientInfo{IsActive: true, Providers: provs(vendors...)}
+}
+
+// --- happy path ---
+
+func TestDeliveredMarksRowAndConfirmsTheClaim(t *testing.T) {
+	h := newHarness(t)
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if len(h.store.delivered) != 1 {
+		t.Fatalf("want 1 delivered write, got %d", len(h.store.delivered))
+	}
+	if got := deref(h.store.delivered[0].LastProvider); got != "mock" {
 		t.Errorf("delivered last_provider = %q, want mock", got)
 	}
-	if store.processed != 1 {
-		t.Errorf("want MarkProcessing called once, got %d", store.processed)
+	if h.store.processed != 1 {
+		t.Errorf("MarkProcessing calls = %d, want 1", h.store.processed)
+	}
+	// The claim must be upgraded to "sent" after a successful send — that is what
+	// lets a duplicate safely finish the bookkeeping instead of guessing.
+	if h.idem.markCalls != 1 {
+		t.Errorf("MarkSent calls = %d, want 1", h.idem.markCalls)
 	}
 }
 
-func TestProcessOneTransientRetries(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true, sendErr: provider.ErrTransient}
-	prod := &fakeProducer{}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: true}, router, prod)
+func TestMarkSentFailureStillDelivers(t *testing.T) {
+	// The email did go out; failing to record the claim upgrade must not change
+	// the row's outcome.
+	h := newHarness(t, func(h *harness) { h.idem.markErr = errors.New("redis down") })
 
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
 
-	if len(store.retrying) != 1 {
-		t.Fatalf("want 1 retrying, got %d", len(store.retrying))
-	}
-	if len(prod.recs) != 1 || prod.recs[0].Topic != TopicRetry1Min {
-		t.Fatalf("want one re-enqueue to %s, got %+v", TopicRetry1Min, prod.recs)
+	if len(h.store.delivered) != 1 {
+		t.Fatalf("want the row delivered anyway, got %d writes", len(h.store.delivered))
 	}
 }
 
-func TestProcessOneRetryExhausted(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true, sendErr: provider.ErrTransient}
-	prod := &fakeProducer{}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: true}, router, prod)
+// --- retry / failure classification ---
 
-	// retry_count already at the max (3) → terminal failure, no re-enqueue.
-	p.processOne(context.Background(), testRow(3, gen.ScheduleStatusPending))
+func TestTransientErrorRetriesOnTheNextTier(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.router.sendErr = provider.ErrTransient })
 
-	if len(store.failed) != 1 {
-		t.Fatalf("want 1 failed, got %d", len(store.failed))
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if len(h.store.retrying) != 1 {
+		t.Fatalf("want 1 retrying write, got %d", len(h.store.retrying))
 	}
-	if got := deref(store.failed[0].FailureReason); !hasPrefix(got, "retry_exhausted") {
-		t.Errorf("failure_reason = %q, want retry_exhausted prefix", got)
-	}
-	if len(prod.recs) != 0 {
-		t.Errorf("exhausted retries must not re-enqueue, got %d", len(prod.recs))
+	if len(h.prod.recs) != 1 || h.prod.recs[0].Topic != kafka.TopicRetry1Min {
+		t.Fatalf("want one re-enqueue to %s, got %+v", kafka.TopicRetry1Min, h.prod.recs)
 	}
 }
 
-func TestProcessOnePermanentFails(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "resend", ok: true, sendErr: errors.New("bad credentials")}
-	p := newTestProcessor(store, fakeCache{info: clientInfo{IsActive: true, Providers: provs("resend")}}, fakeIdem{acquired: true}, router, &fakeProducer{})
+func TestRetryExhaustionFailsWithoutReEnqueue(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.router.sendErr = provider.ErrTransient })
 
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+	// retry_count already at the configured max (3).
+	h.proc.processOne(context.Background(), testRow(3, gen.ScheduleStatusPending))
 
-	if len(store.failed) != 1 {
-		t.Fatalf("want 1 failed, got %d", len(store.failed))
+	if len(h.store.failed) != 1 {
+		t.Fatalf("want 1 failed write, got %d", len(h.store.failed))
 	}
-	if len(store.retrying) != 0 {
-		t.Error("permanent error must not retry")
+	if reason := deref(h.store.failed[0].FailureReason); !strings.HasPrefix(reason, "retry_exhausted") {
+		t.Errorf("failure_reason = %q, want a retry_exhausted prefix", reason)
 	}
-}
-
-func TestProcessOneInactiveClientCancelled(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true}
-	p := newTestProcessor(store, fakeCache{info: clientInfo{IsActive: false}}, fakeIdem{acquired: true}, router, &fakeProducer{})
-
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
-
-	if len(store.cancelled) != 1 {
-		t.Fatalf("want 1 cancelled, got %d", len(store.cancelled))
-	}
-	if got := deref(store.cancelled[0].FailureReason); got != "client_inactive" {
-		t.Errorf("cancel reason = %q, want client_inactive", got)
-	}
-	if router.sends != 0 {
-		t.Error("inactive client must not send")
+	if len(h.prod.recs) != 0 {
+		t.Errorf("exhausted retries must not re-enqueue, got %d records", len(h.prod.recs))
 	}
 }
 
-func TestProcessOneIdempotencyDuplicate(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: false}, router, &fakeProducer{})
+func TestPermanentErrorFailsWithoutRetrying(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.router.sendErr = errors.New("bad credentials") })
 
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
 
-	if router.sends != 0 {
-		t.Error("duplicate must skip the provider send")
+	if len(h.store.failed) != 1 {
+		t.Fatalf("want 1 failed write, got %d", len(h.store.failed))
 	}
-	if len(store.delivered) != 1 {
-		t.Fatalf("duplicate should still mark delivered, got %d", len(store.delivered))
+	if len(h.store.retrying) != 0 {
+		t.Error("a permanent error must not consume a retry")
 	}
 }
 
-func TestProcessOneCacheUnavailableLeavesProcessing(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{vendor: "mock", ok: true}
-	p := newTestProcessor(store, fakeCache{err: errCacheUnavailable}, fakeIdem{acquired: true}, router, &fakeProducer{})
+// A send cut short by our own shutdown says nothing about whether the email
+// went out, so the row must be left alone for reconciliation rather than
+// recorded as a provider failure.
+func TestShutdownDuringSendLeavesRowUntouched(t *testing.T) {
+	for _, sendErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		h := newHarness(t, func(h *harness) { h.router.sendErr = sendErr })
 
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+		h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
 
-	if store.processed != 1 {
-		t.Errorf("row should be marked processing, got %d", store.processed)
-	}
-	if len(store.delivered)+len(store.failed)+len(store.cancelled)+len(store.retrying) != 0 {
-		t.Error("cache-unavailable row must be left in processing (no terminal mark)")
-	}
-}
-
-func TestProcessOneNoProviderFails(t *testing.T) {
-	store := &fakeStore{}
-	router := &fakeRouter{ok: false}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: true}, router, &fakeProducer{})
-
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
-
-	if len(store.failed) != 1 {
-		t.Fatalf("want 1 failed, got %d", len(store.failed))
-	}
-	if got := deref(store.failed[0].FailureReason); got != "no_active_providers" {
-		t.Errorf("failure_reason = %q, want no_active_providers", got)
+		if n := h.store.terminalWrites(); n != 0 {
+			t.Errorf("%v: expected no terminal write, got %d", sendErr, n)
+		}
+		if h.store.processed != 1 {
+			t.Errorf("%v: the row should still be marked processing", sendErr)
+		}
 	}
 }
 
-func TestProcessOneSkipsCancelledRow(t *testing.T) {
-	store := &fakeStore{}
-	p := newTestProcessor(store, fakeCache{info: activeMock()}, fakeIdem{acquired: true}, &fakeRouter{ok: true}, &fakeProducer{})
+// --- routing outcomes ---
 
-	p.processOne(context.Background(), testRow(0, gen.ScheduleStatusCancelled))
+// Three very different conditions used to collapse into one "no providers"
+// failure. Only a genuine configuration problem may be terminal.
+func TestSelectOutcomesRouteToTheRightOutcome(t *testing.T) {
+	cases := []struct {
+		name       string
+		outcome    SelectOutcome
+		wantFailed bool
+		wantRetry  bool
+	}{
+		{"no eligible vendor is a config problem", SelectNoEligibleVendor, true, false},
+		{"an open breaker is a vendor outage", SelectBreakerOpen, false, true},
+		{"an empty bucket is backpressure", SelectNoCapacity, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, func(h *harness) {
+				h.router.selection = Selection{Outcome: c.outcome}
+			})
 
-	if store.processed != 0 {
-		t.Error("an already-cancelled row must be skipped before MarkProcessing")
+			h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+			if got := len(h.store.failed) == 1; got != c.wantFailed {
+				t.Errorf("failed=%v, want %v", got, c.wantFailed)
+			}
+			if got := len(h.store.retrying) == 1; got != c.wantRetry {
+				t.Errorf("retrying=%v, want %v", got, c.wantRetry)
+			}
+			if h.router.sends != 0 {
+				t.Error("no provider was selected, so nothing may be sent")
+			}
+		})
 	}
 }
 
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+func TestNoEligibleVendorRecordsTheReason(t *testing.T) {
+	h := newHarness(t, func(h *harness) {
+		h.router.selection = Selection{Outcome: SelectNoEligibleVendor}
+	})
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if reason := deref(h.store.failed[0].FailureReason); reason != "no_active_providers" {
+		t.Errorf("failure_reason = %q, want no_active_providers", reason)
+	}
+}
+
+// --- idempotency claim states ---
+
+// A claim that was never confirmed means the owner may have died before its
+// send completed. Marking the row delivered here is how an unsent email gets
+// recorded as delivered, so this path must do nothing at all.
+func TestUnconfirmedClaimLeavesRowProcessing(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.idem.claim = claimInFlight })
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if h.router.sends != 0 {
+		t.Error("a claimed send must not be duplicated")
+	}
+	if n := h.store.terminalWrites(); n != 0 {
+		t.Errorf("an unconfirmed claim must not write a terminal status, got %d writes", n)
+	}
+}
+
+// A confirmed claim means the email definitely went out, so completing the
+// bookkeeping is correct and idempotent.
+func TestConfirmedClaimCompletesBookkeeping(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.idem.claim = claimSent })
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if h.router.sends != 0 {
+		t.Error("a confirmed send must not be repeated")
+	}
+	if len(h.store.delivered) != 1 {
+		t.Fatalf("want the row marked delivered, got %d writes", len(h.store.delivered))
+	}
+}
+
+func TestIdempotencyOutageLeavesRowProcessing(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.idem.err = errIdemUnavailable })
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if h.router.sends != 0 {
+		t.Error("must not send when the claim could not be checked")
+	}
+	if n := h.store.terminalWrites(); n != 0 {
+		t.Errorf("expected no terminal write, got %d", n)
+	}
+}
+
+// --- guards ---
+
+func TestTerminalRowsAreSkippedEntirely(t *testing.T) {
+	for _, status := range []gen.ScheduleStatus{
+		gen.ScheduleStatusDelivered,
+		gen.ScheduleStatusFailed,
+		gen.ScheduleStatusCancelled,
+	} {
+		h := newHarness(t)
+
+		h.proc.processOne(context.Background(), testRow(0, status))
+
+		if h.store.processed != 0 {
+			t.Errorf("%s: a terminal row must not be flipped back to processing", status)
+		}
+		if h.router.sends != 0 {
+			t.Errorf("%s: a terminal row must not be sent", status)
+		}
+	}
+}
+
+// A guarded UPDATE matching nothing means the row moved under us — a cancel
+// that raced the send, say. The processor must stop rather than press on and
+// overwrite whatever the row now says.
+func TestLostStatusRaceAbortsProcessing(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.store.loseRace = true })
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if h.router.sends != 0 {
+		t.Error("losing the MarkProcessing race must stop before the send")
+	}
+	if n := h.store.terminalWrites(); n != 0 {
+		t.Errorf("expected no terminal write after a lost race, got %d", n)
+	}
+}
+
+func TestInactiveClientCancelsWithoutSending(t *testing.T) {
+	h := newHarnessWithCache(t, fakeCache{info: clientInfo{IsActive: false}})
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if len(h.store.cancelled) != 1 {
+		t.Fatalf("want 1 cancelled write, got %d", len(h.store.cancelled))
+	}
+	if reason := deref(h.store.cancelled[0].FailureReason); reason != "client_inactive" {
+		t.Errorf("cancel reason = %q, want client_inactive", reason)
+	}
+	if h.router.sends != 0 {
+		t.Error("an inactive client's mail must not be sent")
+	}
+}
+
+func TestCacheOutageLeavesRowProcessing(t *testing.T) {
+	h := newHarnessWithCache(t, fakeCache{err: errCacheUnavailable})
+
+	h.proc.processOne(context.Background(), testRow(0, gen.ScheduleStatusPending))
+
+	if h.store.processed != 1 {
+		t.Errorf("the row should be marked processing, got %d calls", h.store.processed)
+	}
+	if n := h.store.terminalWrites(); n != 0 {
+		t.Error("a cache-unavailable row must be left in processing")
+	}
+}
+
+// --- batch handling ---
+
+func TestParseBatchKeepsOnlyValidPayloads(t *testing.T) {
+	valid := "0195e2c0-0000-7000-8000-000000000001"
+	recs := []*kgo.Record{
+		{Value: kafka.MarshalDuePayload(valid)},
+		{Value: []byte(`not json`)},
+		{Value: kafka.MarshalDuePayload("not-a-uuid")},
+	}
+
+	ids, byID := parseBatch(recs)
+
+	if len(ids) != 1 || len(byID) != 1 {
+		t.Fatalf("parseBatch kept %d ids / %d records, want 1 each", len(ids), len(byID))
+	}
+	if byID[valid] == nil {
+		t.Errorf("the valid record should be reachable by its schedule id")
+	}
+}
+
+func TestProcessBatchStopsOnFetchFailure(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.store.fetchErr = errors.New("db down") })
+	h.store.rows = []gen.ScheduledEmail{testRow(0, gen.ScheduleStatusPending)}
+
+	h.proc.processBatch(context.Background(), Batch{recs: []*kgo.Record{
+		{Value: kafka.MarshalDuePayload("0195e2c0-0000-7000-8000-000000000001")},
+	}})
+
+	if h.store.processed != 0 {
+		t.Error("a failed fetch must not touch any row")
+	}
+}
+
+// Once shutdown starts, remaining rows are left uncommitted for the next
+// consumer rather than half-processed against a dying context.
+func TestProcessBatchStopsAtShutdown(t *testing.T) {
+	h := newHarness(t)
+	h.store.rows = []gen.ScheduledEmail{
+		testRow(0, gen.ScheduleStatusPending),
+		testRow(0, gen.ScheduleStatusPending),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.proc.processBatch(ctx, Batch{recs: []*kgo.Record{
+		{Value: kafka.MarshalDuePayload("0195e2c0-0000-7000-8000-000000000001")},
+	}})
+
+	if h.store.processed != 0 {
+		t.Errorf("no row should be processed after cancellation, got %d", h.store.processed)
+	}
 }

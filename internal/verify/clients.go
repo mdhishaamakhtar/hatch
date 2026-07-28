@@ -133,11 +133,11 @@ func (v *Verifier) tempoSearch(ctx context.Context, tags string) (string, error)
 // retry calls fn up to attempts times, sleeping delay between tries, until fn
 // returns true or ctx is cancelled. Returns whether fn ever succeeded.
 func retry(ctx context.Context, attempts int, delay time.Duration, fn func() bool) bool {
-	for i := 0; i < attempts; i++ {
+	for attempt := range attempts {
 		if fn() {
 			return true
 		}
-		if i == attempts-1 {
+		if attempt == attempts-1 {
 			break
 		}
 		select {

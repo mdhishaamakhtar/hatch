@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,11 +17,13 @@ import (
 	"github.com/mdhishaamakhtar/hatch/gen"
 	hdb "github.com/mdhishaamakhtar/hatch/pkg/db"
 	"github.com/mdhishaamakhtar/hatch/pkg/logger"
-	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 )
+
+// pgUniqueViolation is the SQLSTATE for a unique-constraint conflict.
+const pgUniqueViolation = "23505"
 
 type createScheduleRequest struct {
 	DeliverAt      int64           `json:"deliver_at"`
@@ -81,85 +84,134 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	lg := logger.WithCtx(r.Context(), s.lg).With(zap.String("client_id", clientID.String()))
 
+	in, ok := s.decodeCreateRequest(w, r, lg)
+	if !ok {
+		return
+	}
+
+	if !s.hasActiveProvider(w, r, clientID, lg) {
+		return
+	}
+
+	// An existing key means this request was already accepted — replay its result
+	// rather than scheduling a second email.
+	if in.IdempotencyKey != "" && !s.replayIdempotent(r.Context(), w, clientID, in.IdempotencyKey, lg) {
+		return // either the replay or an error response has been written
+	}
+
+	ctx, span := otel.Tracer("scheduler-api").Start(r.Context(), "api.schedule.create")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("client_id", clientID.String()),
+		attribute.String("deliver_at", time.UnixMilli(in.DeliverAt).Format(time.RFC3339)),
+		attribute.String("idempotency_key", in.IdempotencyKey),
+	)
+
+	s.insertSchedule(ctx, w, clientID, in, lg)
+}
+
+// decodeCreateRequest reads, size-limits, parses, and validates the body. It
+// writes the failure response itself and returns ok=false.
+func (s *Server) decodeCreateRequest(w http.ResponseWriter, r *http.Request, lg *zap.Logger) (createScheduleRequest, bool) {
+	var in createScheduleRequest
+
 	if ct := r.Header.Get("Content-Type"); ct != "" && ct != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, ErrCodeUnsupportedMedia, ct)
-		return
+		return in, false
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes))
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, ErrCodePayloadTooLarge, "")
-			return
+			return in, false
 		}
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, "body_read")
-		return
+		return in, false
 	}
-	var in createScheduleRequest
 	if err := json.Unmarshal(body, &in); err != nil {
-		s.bumpValidation("json")
+		mValidationFailures.WithLabelValues("json").Inc()
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, "json")
-		return
+		return in, false
 	}
-	// Validate.
-	if reason := validateCreateSchedule(in, s.cfg.MinScheduleHorizon); reason != "" {
-		s.bumpValidation(reason)
+	if reason := validateCreateSchedule(in, s.cfg.MinScheduleHorizon, s.cfg.MaxScheduleHorizon); reason != "" {
+		mValidationFailures.WithLabelValues(reason).Inc()
 		lg.Warn("Validation failure", zap.String("reason", reason))
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, reason)
-		return
+		return in, false
 	}
-	deliverAt := time.UnixMilli(in.DeliverAt)
+	return in, true
+}
 
-	// Active providers gate.
+// hasActiveProvider gates creation on the client having somewhere to send from.
+func (s *Server) hasActiveProvider(w http.ResponseWriter, r *http.Request, clientID uuid.UUID, lg *zap.Logger) bool {
 	provs, err := s.queries.ListClientActiveProviders(r.Context(), hdb.UUIDToBytes(clientID))
 	if err != nil {
 		lg.Error("list active providers failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
-		return
+		return false
 	}
 	if len(provs) == 0 {
-		mNoProviderRejections.With(prometheus.Labels{"client_id": clientID.String()}).Inc()
+		mNoProviderRejections.Inc()
 		lg.Warn("No active providers - rejecting request")
 		writeError(w, http.StatusBadRequest, ErrCodeNoActiveProviders, "")
-		return
+		return false
 	}
+	return true
+}
 
-	// Idempotency lookup (only when key supplied).
-	if in.IdempotencyKey != "" {
-		row, err := s.queries.GetScheduleIdempotencyByKey(r.Context(), gen.GetScheduleIdempotencyByKeyParams{
-			ClientID:       hdb.UUIDToBytes(clientID),
-			IdempotencyKey: in.IdempotencyKey,
-		})
-		if err == nil {
-			mIdempotencyHits.WithLabelValues().Inc()
-			scheduleID, _ := hdb.BytesToUUID(row.ScheduleID)
-			lg.Info("Duplicate idempotency key - returning existing",
-				zap.String("schedule_id", scheduleID.String()),
-				zap.String("idempotency_key", in.IdempotencyKey),
-			)
-			writeJSON(w, http.StatusOK, scheduleResponse{
-				ScheduleID: scheduleID.String(),
-				Status:     "pending",
-				DeliverAt:  row.DeliverAt.Time.UnixMilli(),
-			})
-			return
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			lg.Error("idempotency lookup failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
-			return
-		}
+// replayIdempotent looks the key up in the side table and, if it's a repeat,
+// writes the 200 replay response. It returns false when the caller must stop —
+// either the replay was written or a lookup error was reported.
+func (s *Server) replayIdempotent(ctx context.Context, w http.ResponseWriter, clientID uuid.UUID, key string, lg *zap.Logger) bool {
+	row, err := s.queries.GetScheduleIdempotencyByKey(ctx, gen.GetScheduleIdempotencyByKeyParams{
+		ClientID:       hdb.UUIDToBytes(clientID),
+		IdempotencyKey: key,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true // first time we have seen this key
 	}
-
-	// Insert under api.schedule.create span.
-	ctx, span := otel.Tracer("scheduler-api").Start(r.Context(), "api.schedule.create")
-	span.SetAttributes(
-		attribute.String("client_id", clientID.String()),
-		attribute.String("deliver_at", deliverAt.Format(time.RFC3339)),
-		attribute.String("idempotency_key", in.IdempotencyKey),
+	if err != nil {
+		lg.Error("idempotency lookup failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
+		return false
+	}
+	scheduleID, _ := hdb.BytesToUUID(row.ScheduleID)
+	lg.Info("Duplicate idempotency key - returning existing",
+		zap.String("schedule_id", scheduleID.String()),
+		zap.String("idempotency_key", key),
 	)
-	defer span.End()
+	s.writeReplay(ctx, w, clientID, scheduleID, row.DeliverAt)
+	return false
+}
 
+// writeReplay renders the 200 response for a repeated idempotency key. The side
+// table doesn't track status, so the schedule row is re-read for it — a replay
+// must not claim `pending` for a schedule that has since delivered or been
+// cancelled. If that read fails the response is omitted rather than guessed.
+func (s *Server) writeReplay(ctx context.Context, w http.ResponseWriter, clientID, scheduleID uuid.UUID, deliverAt pgtype.Timestamptz) {
+	mIdempotencyHits.Inc()
+	resp := scheduleResponse{
+		ScheduleID: scheduleID.String(),
+		DeliverAt:  deliverAt.Time.UnixMilli(),
+	}
+	row, err := s.queries.GetScheduleByID(ctx, gen.GetScheduleByIDParams{
+		ID:       hdb.UUIDToBytes(scheduleID),
+		ClientID: hdb.UUIDToBytes(clientID),
+	})
+	if err != nil {
+		s.lg.Warn("idempotent replay could not read current status", zap.Error(err))
+	} else {
+		resp.Status = string(row.Status)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// insertSchedule writes the schedule row and (when a key was supplied) its
+// idempotency side-table row in one transaction, then responds 201. A unique
+// violation on the side table means a concurrent request won the race, so the
+// winner's schedule is replayed with 200 instead.
+func (s *Server) insertSchedule(ctx context.Context, w http.ResponseWriter, clientID uuid.UUID, in createScheduleRequest, lg *zap.Logger) {
 	scheduleID, err := uuid.NewV7()
 	if err != nil {
 		lg.Error("uuidv7 failed", zap.Error(err))
@@ -167,9 +219,9 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deliverTS := pgtype.Timestamptz{Time: deliverAt, Valid: true}
-	insertID := hdb.UUIDToBytes(scheduleID)
-	cid := hdb.UUIDToBytes(clientID)
+	deliverAt := pgtype.Timestamptz{Time: time.UnixMilli(in.DeliverAt), Valid: true}
+	scheduleIDBytes := hdb.UUIDToBytes(scheduleID)
+	clientIDBytes := hdb.UUIDToBytes(clientID)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -178,15 +230,14 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
 	qtx := s.queries.WithTx(tx)
 
-	insSpanCtx, insSpan := otel.Tracer("scheduler-api").Start(ctx, "db.schedule.insert")
-	row, err := qtx.CreateSchedule(insSpanCtx, gen.CreateScheduleParams{
-		ID:             insertID,
-		ClientID:       cid,
+	insertCtx, insertSpan := otel.Tracer("scheduler-api").Start(ctx, "db.schedule.insert")
+	row, err := qtx.CreateSchedule(insertCtx, gen.CreateScheduleParams{
+		ID:             scheduleIDBytes,
+		ClientID:       clientIDBytes,
 		IdempotencyKey: optionalString(in.IdempotencyKey),
-		DeliverAt:      deliverTS,
+		DeliverAt:      deliverAt,
 		RecipientEmail: in.RecipientEmail,
 		FromEmail:      in.FromEmail,
 		FromName:       optionalString(in.FromName),
@@ -194,7 +245,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		Body:           in.Body,
 		Metadata:       jsonOrNull(in.Metadata),
 	})
-	insSpan.End()
+	insertSpan.End()
 	if err != nil {
 		lg.Error("Postgres write failure", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
@@ -203,36 +254,30 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 
 	if in.IdempotencyKey != "" {
 		err := qtx.CreateScheduleIdempotency(ctx, gen.CreateScheduleIdempotencyParams{
-			ClientID:       cid,
+			ClientID:       clientIDBytes,
 			IdempotencyKey: in.IdempotencyKey,
-			ScheduleID:     insertID,
-			DeliverAt:      deliverTS,
+			ScheduleID:     scheduleIDBytes,
+			DeliverAt:      deliverAt,
 		})
-		if err != nil {
-			// Unique violation on (client_id, idempotency_key) means a concurrent
-			// request beat us. Roll back, re-query the side table, return 200 with
-			// the winner's schedule_id.
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				_ = tx.Rollback(ctx)
-				existing, qerr := s.queries.GetScheduleIdempotencyByKey(ctx, gen.GetScheduleIdempotencyByKeyParams{
-					ClientID:       cid,
-					IdempotencyKey: in.IdempotencyKey,
-				})
-				if qerr != nil {
-					lg.Error("idempotency race re-lookup failed", zap.Error(qerr))
-					writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
-					return
-				}
-				mIdempotencyHits.WithLabelValues().Inc()
-				existingID, _ := hdb.BytesToUUID(existing.ScheduleID)
-				writeJSON(w, http.StatusOK, scheduleResponse{
-					ScheduleID: existingID.String(),
-					Status:     "pending",
-					DeliverAt:  existing.DeliverAt.Time.UnixMilli(),
-				})
+		var pgErr *pgconn.PgError
+		switch {
+		case err == nil:
+		case errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation:
+			// A concurrent request beat us. Roll back and replay the winner.
+			_ = tx.Rollback(ctx)
+			existing, lookupErr := s.queries.GetScheduleIdempotencyByKey(ctx, gen.GetScheduleIdempotencyByKeyParams{
+				ClientID:       clientIDBytes,
+				IdempotencyKey: in.IdempotencyKey,
+			})
+			if lookupErr != nil {
+				lg.Error("idempotency race re-lookup failed", zap.Error(lookupErr))
+				writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
 				return
 			}
+			winnerID, _ := hdb.BytesToUUID(existing.ScheduleID)
+			s.writeReplay(ctx, w, clientID, winnerID, existing.DeliverAt)
+			return
+		default:
 			lg.Error("idempotency insert failed", zap.Error(err))
 			writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
 			return
@@ -247,7 +292,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 
 	lg.Info("Schedule created",
 		zap.String("schedule_id", scheduleID.String()),
-		zap.Time("deliver_at", deliverAt),
+		zap.Time("deliver_at", deliverAt.Time),
 	)
 	writeJSON(w, http.StatusCreated, scheduleResponse{
 		ScheduleID: scheduleID.String(),
@@ -343,8 +388,7 @@ func (s *Server) handleCancelSchedule(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseScheduleIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	raw := chi.URLParam(r, "schedule_id")
-	id, err := uuid.Parse(raw)
+	id, err := uuid.Parse(chi.URLParam(r, "schedule_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeValidationFailed, "schedule_id_invalid")
 		return uuid.Nil, false
@@ -352,16 +396,29 @@ func parseScheduleIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bo
 	return id, true
 }
 
-func validateCreateSchedule(in createScheduleRequest, minHorizon time.Duration) string {
-	if in.DeliverAt == 0 {
+// Field limits. Kept here so the validator and its test read against one source.
+const (
+	maxIdempotencyKeyLen = 255
+	maxMetadataBytes     = 8 * 1024
+)
+
+// validateCreateSchedule returns "" when the request is acceptable, otherwise
+// the machine-readable reason reported to the caller and the metric.
+func validateCreateSchedule(in createScheduleRequest, minHorizon, maxHorizon time.Duration) string {
+	switch {
+	case in.DeliverAt == 0:
 		return "deliver_at_required"
-	}
-	if in.DeliverAt < 0 {
+	case in.DeliverAt < 0:
 		return "deliver_at_format"
 	}
-	deliverAt := time.UnixMilli(in.DeliverAt)
-	if time.Until(deliverAt) < minHorizon {
+	until := time.Until(time.UnixMilli(in.DeliverAt))
+	switch {
+	case until < minHorizon:
 		return "deliver_at_too_soon"
+	case until > maxHorizon:
+		// Past the pre-created partition runway the INSERT would fail deep in
+		// Postgres ("no partition of relation") and surface as a 500.
+		return "deliver_at_too_far"
 	}
 	if _, err := mail.ParseAddress(in.RecipientEmail); err != nil {
 		return "recipient_email_invalid"
@@ -369,23 +426,17 @@ func validateCreateSchedule(in createScheduleRequest, minHorizon time.Duration) 
 	if _, err := mail.ParseAddress(in.FromEmail); err != nil {
 		return "from_email_invalid"
 	}
-	if in.Subject == "" {
+	switch {
+	case in.Subject == "":
 		return "subject_required"
-	}
-	if in.Body == "" {
+	case in.Body == "":
 		return "body_required"
-	}
-	if len(in.IdempotencyKey) > 255 {
+	case len(in.IdempotencyKey) > maxIdempotencyKeyLen:
 		return "idempotency_key_too_long"
-	}
-	if len(in.Metadata) > 8*1024 {
+	case len(in.Metadata) > maxMetadataBytes:
 		return "metadata_too_large"
 	}
 	return ""
-}
-
-func (s *Server) bumpValidation(reason string) {
-	mValidationFailures.With(prometheus.Labels{"reason": reason}).Inc()
 }
 
 func optionalString(s string) *string {
@@ -399,7 +450,7 @@ func jsonOrNull(raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return nil
 	}
-	return []byte(raw)
+	return raw
 }
 
 func toFullResponse(row gen.ScheduledEmail) scheduleFullResponse {
@@ -415,21 +466,22 @@ func toFullResponse(row gen.ScheduledEmail) scheduleFullResponse {
 		RetryCount:     row.RetryCount,
 		CreatedAt:      row.CreatedAt.Time,
 		UpdatedAt:      row.UpdatedAt.Time,
-	}
-	if row.IdempotencyKey != nil {
-		resp.IdempotencyKey = *row.IdempotencyKey
-	}
-	if row.FromName != nil {
-		resp.FromName = *row.FromName
-	}
-	if row.LastProvider != nil {
-		resp.LastProvider = *row.LastProvider
-	}
-	if row.FailureReason != nil {
-		resp.FailureReason = *row.FailureReason
+		IdempotencyKey: deref(row.IdempotencyKey),
+		FromName:       deref(row.FromName),
+		LastProvider:   deref(row.LastProvider),
+		FailureReason:  deref(row.FailureReason),
 	}
 	if len(row.Metadata) > 0 {
 		resp.Metadata = row.Metadata
 	}
 	return resp
+}
+
+// deref reads an optional text column, treating NULL as the empty string so the
+// `omitempty` JSON tags drop it from the response.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

@@ -5,11 +5,14 @@ import (
 	"time"
 )
 
+const (
+	testMinHorizon = time.Hour
+	testMaxHorizon = 24 * time.Hour
+)
+
 func TestValidateCreateSchedule(t *testing.T) {
-	future := time.Now().Add(2 * time.Hour).UnixMilli()
-	near := time.Now().Add(30 * time.Minute).UnixMilli()
-	base := createScheduleRequest{
-		DeliverAt:      future,
+	valid := createScheduleRequest{
+		DeliverAt:      time.Now().Add(2 * time.Hour).UnixMilli(),
 		RecipientEmail: "to@example.com",
 		FromEmail:      "from@example.com",
 		Subject:        "hi",
@@ -21,63 +24,92 @@ func TestValidateCreateSchedule(t *testing.T) {
 		mut  func(*createScheduleRequest)
 		want string
 	}{
-		{"ok", func(*createScheduleRequest) {}, ""},
-		{"deliver_at zero", func(r *createScheduleRequest) { r.DeliverAt = 0 }, "deliver_at_required"},
+		{"valid", func(*createScheduleRequest) {}, ""},
+		{"deliver_at missing", func(r *createScheduleRequest) { r.DeliverAt = 0 }, "deliver_at_required"},
 		{"deliver_at negative", func(r *createScheduleRequest) { r.DeliverAt = -1 }, "deliver_at_format"},
-		{"deliver_at too soon", func(r *createScheduleRequest) { r.DeliverAt = near }, "deliver_at_too_soon"},
-		{"recipient invalid", func(r *createScheduleRequest) { r.RecipientEmail = "nope" }, "recipient_email_invalid"},
-		{"from invalid", func(r *createScheduleRequest) { r.FromEmail = "nope" }, "from_email_invalid"},
+		{"deliver_at inside the minimum horizon", func(r *createScheduleRequest) {
+			r.DeliverAt = time.Now().Add(30 * time.Minute).UnixMilli()
+		}, "deliver_at_too_soon"},
+		// Past the partition runway the INSERT fails deep in Postgres, so this
+		// has to be caught here as a 400 rather than surfacing as a 500.
+		{"deliver_at past the maximum horizon", func(r *createScheduleRequest) {
+			r.DeliverAt = time.Now().Add(48 * time.Hour).UnixMilli()
+		}, "deliver_at_too_far"},
+		{"recipient not an address", func(r *createScheduleRequest) { r.RecipientEmail = "nope" }, "recipient_email_invalid"},
+		{"from not an address", func(r *createScheduleRequest) { r.FromEmail = "nope" }, "from_email_invalid"},
 		{"subject empty", func(r *createScheduleRequest) { r.Subject = "" }, "subject_required"},
 		{"body empty", func(r *createScheduleRequest) { r.Body = "" }, "body_required"},
-		{"idempotency long", func(r *createScheduleRequest) {
-			r.IdempotencyKey = string(make([]byte, 300))
+		{"idempotency key too long", func(r *createScheduleRequest) {
+			r.IdempotencyKey = string(make([]byte, maxIdempotencyKeyLen+1))
 		}, "idempotency_key_too_long"},
-		{"metadata huge", func(r *createScheduleRequest) {
-			r.Metadata = make([]byte, 9*1024)
+		{"metadata too large", func(r *createScheduleRequest) {
+			r.Metadata = make([]byte, maxMetadataBytes+1)
 		}, "metadata_too_large"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			in := base
+			in := valid
 			tc.mut(&in)
-			got := validateCreateSchedule(in, time.Hour)
-			if got != tc.want {
-				t.Fatalf("validateCreateSchedule: got %q want %q", got, tc.want)
+			if got := validateCreateSchedule(in, testMinHorizon, testMaxHorizon); got != tc.want {
+				t.Fatalf("validateCreateSchedule = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestHTTPStatusLabel(t *testing.T) {
+// Exactly-at-the-boundary values are accepted; the horizons are inclusive.
+func TestValidateCreateScheduleHorizonBoundaries(t *testing.T) {
+	base := createScheduleRequest{
+		RecipientEmail: "to@example.com",
+		FromEmail:      "from@example.com",
+		Subject:        "hi",
+		Body:           "<p>hi</p>",
+	}
+	// A small margin absorbs the clock advancing between building the request
+	// and validating it.
+	const margin = time.Second
+
+	atMin := base
+	atMin.DeliverAt = time.Now().Add(testMinHorizon + margin).UnixMilli()
+	if got := validateCreateSchedule(atMin, testMinHorizon, testMaxHorizon); got != "" {
+		t.Errorf("just inside the minimum horizon should be valid, got %q", got)
+	}
+
+	atMax := base
+	atMax.DeliverAt = time.Now().Add(testMaxHorizon - margin).UnixMilli()
+	if got := validateCreateSchedule(atMax, testMinHorizon, testMaxHorizon); got != "" {
+		t.Errorf("just inside the maximum horizon should be valid, got %q", got)
+	}
+}
+
+func TestHTTPStatusLabelKeepsCardinalityBounded(t *testing.T) {
 	cases := map[int]string{
+		101: "1xx",
 		200: "2xx",
 		301: "3xx",
-		400: "400",
-		401: "401",
-		404: "404",
-		409: "409",
-		413: "413",
-		415: "415",
-		422: "422",
-		429: "429",
+		// The 4xx codes Hatch actually returns stay precise...
+		400: "400", 401: "401", 403: "403", 404: "404",
+		409: "409", 413: "413", 415: "415", 422: "422", 429: "429",
+		// ...everything else collapses, so a client probing random codes can't
+		// create unbounded series.
+		418: "4xx",
 		499: "4xx",
 		500: "5xx",
 		503: "5xx",
-		101: "1xx",
 	}
 	for code, want := range cases {
 		if got := httpStatusLabel(code); got != want {
-			t.Errorf("httpStatusLabel(%d) = %q want %q", code, got, want)
+			t.Errorf("httpStatusLabel(%d) = %q, want %q", code, got, want)
 		}
 	}
 }
 
-func TestOptionalString(t *testing.T) {
+func TestOptionalStringMapsEmptyToNil(t *testing.T) {
+	// An empty optional field must become SQL NULL, not an empty string.
 	if optionalString("") != nil {
-		t.Fatal("empty string should produce nil")
+		t.Error("empty string should produce nil")
 	}
-	v := optionalString("x")
-	if v == nil || *v != "x" {
-		t.Fatal("non-empty string should produce pointer to value")
+	if v := optionalString("x"); v == nil || *v != "x" {
+		t.Error("non-empty string should produce a pointer to the value")
 	}
 }

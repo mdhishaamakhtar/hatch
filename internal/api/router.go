@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -8,10 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/crypto"
-	"github.com/mdhishaamakhtar/hatch/pkg/metrics"
+	"github.com/mdhishaamakhtar/hatch/pkg/httpx"
 	"github.com/redis/rueidis"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 )
 
@@ -43,13 +43,20 @@ func NewServer(cfg Config, lg *zap.Logger, pool *pgxpool.Pool, rc rueidis.Client
 // Handler builds the full chi router with all middleware and routes wired.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
+	// chi panics if Use runs after a route is registered, so every middleware
+	// goes on before MountAdmin below.
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(Obs())
 
-	r.Get("/healthz", healthHandler())
-	r.Get("/readyz", readyHandler(s.pool, s.redis))
-	r.Handle("/metrics", metrics.Handler())
+	// The health/readiness/metrics surface is identical across every Hatch
+	// service; only the routes below it are the API's own.
+	httpx.MountAdmin(r,
+		httpx.Dependency{Name: "postgres", Ping: s.pool.Ping},
+		httpx.Dependency{Name: "redis", Ping: func(ctx context.Context) error {
+			return s.redis.Do(ctx, s.redis.B().Ping().Build()).Error()
+		}},
+	)
 
 	if s.cfg.APIEnableSwagger {
 		r.Get("/swagger/*", httpSwagger.Handler(
@@ -69,7 +76,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Admin.
 	r.Route("/admin", func(r chi.Router) {
-		r.Use(AdminAuth(s.cfg.AdminAPIKey))
+		r.Use(httpx.AdminAuth(s.cfg.AdminAPIKey))
 
 		r.Post("/clients", s.handleCreateClient)
 		r.Delete("/clients/{client_id}", s.handleDeleteClient)
@@ -77,15 +84,7 @@ func (s *Server) Handler() http.Handler {
 		r.Delete("/clients/{client_id}/providers/{vendor}", s.handleDeleteProvider)
 	})
 
-	// Wrap with otelhttp so every request gets a span. Span name is the chi
-	// route pattern injected via a custom formatter so spans group by route.
-	return otelhttp.NewHandler(r, "scheduler-api",
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-			rc := chi.RouteContext(r.Context())
-			if rc != nil && rc.RoutePattern() != "" {
-				return r.Method + " " + rc.RoutePattern()
-			}
-			return r.Method + " " + r.URL.Path
-		}),
-	)
+	// Every request gets a span named by its chi route pattern, so spans group
+	// by route rather than by raw path.
+	return httpx.Traced("scheduler-api", r)
 }

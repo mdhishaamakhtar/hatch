@@ -243,38 +243,6 @@ paths:
       summary: Delete a client provider
       tags:
       - admin
-  /healthz:
-    get:
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: Liveness probe
-      tags:
-      - health
-  /readyz:
-    get:
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/internal_api.apiError'
-      summary: Readiness probe (pings Postgres + Redis)
-      tags:
-      - health
   /v1/schedules:
     post:
       consumes:

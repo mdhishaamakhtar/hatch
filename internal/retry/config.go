@@ -1,8 +1,9 @@
 package retry
 
 import (
-	"strings"
 	"time"
+
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 )
 
 // Config is loaded once at boot via pkg/config.Load[Config]. The retry consumer
@@ -34,27 +35,18 @@ type Config struct {
 	Interval5Min  time.Duration `env:"RETRY_INTERVAL_5MIN"  envDefault:"5m"`
 	Interval30Min time.Duration `env:"RETRY_INTERVAL_30MIN" envDefault:"30m"`
 
-	ShutdownTimeoutMS int `env:"RETRY_SHUTDOWN_MS" envDefault:"10000"`
+	ShutdownTimeout time.Duration `env:"RETRY_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 }
 
 // Brokers splits KafkaBrokers into a slice of broker addresses.
-func (c Config) Brokers() []string {
-	parts := strings.Split(c.KafkaBrokers, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+func (c Config) Brokers() []string { return kafka.ParseBrokers(c.KafkaBrokers) }
 
 // Tiers returns the three tier consumers derived from config, in ascending
 // delay order. The group name is the configured prefix plus the tier label.
 func (c Config) Tiers() []Tier {
 	return []Tier{
-		{Name: "1min", Topic: TopicRetry1Min, Group: c.ConsumerGroupPrefix + "-1min", Interval: c.Interval1Min},
-		{Name: "5min", Topic: TopicRetry5Min, Group: c.ConsumerGroupPrefix + "-5min", Interval: c.Interval5Min},
-		{Name: "30min", Topic: TopicRetry30Min, Group: c.ConsumerGroupPrefix + "-30min", Interval: c.Interval30Min},
+		{Name: "1min", Topic: kafka.TopicRetry1Min, Group: c.ConsumerGroupPrefix + "-1min", Interval: c.Interval1Min},
+		{Name: "5min", Topic: kafka.TopicRetry5Min, Group: c.ConsumerGroupPrefix + "-5min", Interval: c.Interval5Min},
+		{Name: "30min", Topic: kafka.TopicRetry30Min, Group: c.ConsumerGroupPrefix + "-30min", Interval: c.Interval30Min},
 	}
 }

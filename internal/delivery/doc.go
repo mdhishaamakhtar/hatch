@@ -1,2 +1,0 @@
-// Package delivery holds service-specific business logic. Filled in per Build Plan phases.
-package delivery

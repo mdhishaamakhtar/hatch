@@ -22,11 +22,19 @@ func stubFactory(p *stubProvider) provider.Factory {
 	return func([]byte) (provider.Provider, error) { return p, nil }
 }
 
-func testRouter(t *testing.T, capacity, refill int, factories map[string]provider.Factory) *Router {
-	t.Helper()
-	// cipher=nil → creds pass straight through to the factory; minReqs=2 / ratio=0.5
-	// so two failures trip the breaker; long open timeout so it stays open in-test.
+// testRouter builds a router with cipher=nil (creds pass straight through),
+// minReqs=2 and ratio=0.5 so two failures trip the breaker, and a long open
+// timeout so it stays open for the duration of a test.
+func testRouter(capacity, refill int, factories map[string]provider.Factory) *Router {
 	return NewRouter(factories, nil, capacity, refill, 2, 0.5, time.Minute)
+}
+
+func factories(vendors ...string) map[string]provider.Factory {
+	out := make(map[string]provider.Factory, len(vendors))
+	for _, v := range vendors {
+		out[v] = stubFactory(&stubProvider{vendor: v})
+	}
+	return out
 }
 
 func provs(vendors ...string) []cachedProvider {
@@ -37,125 +45,124 @@ func provs(vendors ...string) []cachedProvider {
 	return out
 }
 
-func TestSelectExcludesLastProvider(t *testing.T) {
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock":   stubFactory(&stubProvider{vendor: "mock"}),
-		"resend": stubFactory(&stubProvider{vendor: "resend"}),
-	})
-	vendor, _, ok := r.Select("c1", provs("mock", "resend"), "mock")
-	if !ok || vendor != "resend" {
-		t.Fatalf("want resend selected (mock excluded as last_provider), got %q ok=%v", vendor, ok)
+// tripBreaker drives enough failures through a vendor to open its breaker.
+func tripBreaker(r *Router, clientID, vendor string) {
+	for range 2 {
+		_ = r.Send(context.Background(), clientID, vendor, nil, provider.Email{})
 	}
 }
 
-func TestSelectRetriesSoleProviderWhenExclusionEmptiesSet(t *testing.T) {
-	// Single provider that just failed: last_provider exclusion would leave no
-	// candidate, so it's dropped and we retry on the sole provider.
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock": stubFactory(&stubProvider{vendor: "mock"}),
-	})
-	vendor, _, ok := r.Select("c1", provs("mock"), "mock")
-	if !ok || vendor != "mock" {
-		t.Fatalf("want mock retried as the sole provider, got %q ok=%v", vendor, ok)
+func TestSelectPrefersAnAlternativeToTheLastProvider(t *testing.T) {
+	r := testRouter(100, 100, factories("mock", "resend"))
+
+	sel := r.Select("c1", provs("mock", "resend"), "mock")
+
+	if sel.Outcome != SelectOK || sel.Vendor != "resend" {
+		t.Fatalf("Select = %+v, want resend (mock just failed)", sel)
 	}
 }
 
-func TestSelectSoleProviderBreakerOpenStillFails(t *testing.T) {
-	// The exclusion relaxation does NOT override breaker-OPEN: a genuinely
-	// unhealthy sole provider yields no candidate even on retry.
+// A single-provider client must not be stranded after one transient blip: the
+// last_provider exclusion is dropped when it would leave no candidate at all.
+func TestSelectRetriesSoleProviderWhenExclusionEmptiesTheSet(t *testing.T) {
+	r := testRouter(100, 100, factories("mock"))
+
+	sel := r.Select("c1", provs("mock"), "mock")
+
+	if sel.Outcome != SelectOK || sel.Vendor != "mock" {
+		t.Fatalf("Select = %+v, want the sole provider retried", sel)
+	}
+}
+
+// The relaxation above does NOT override an open breaker: a genuinely unhealthy
+// sole provider yields no candidate, and the reason must say why.
+func TestSelectReportsBreakerOpenForAnUnhealthySoleProvider(t *testing.T) {
 	stub := &stubProvider{vendor: "mock", err: provider.ErrTransient}
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock": stubFactory(stub),
-	})
-	for i := 0; i < 2; i++ { // trip the breaker (minReqs 2, ratio 0.5)
-		_ = r.Send(context.Background(), "c1", "mock", nil, provider.Email{})
-	}
-	if _, _, ok := r.Select("c1", provs("mock"), "mock"); ok {
-		t.Fatal("want ok=false: sole provider with OPEN breaker must not be retried")
+	r := testRouter(100, 100, map[string]provider.Factory{"mock": stubFactory(stub)})
+	tripBreaker(r, "c1", "mock")
+
+	sel := r.Select("c1", provs("mock"), "mock")
+
+	if sel.Outcome != SelectBreakerOpen {
+		t.Fatalf("Outcome = %v, want SelectBreakerOpen", sel.Outcome)
 	}
 }
 
-func TestSelectSkipsUnregisteredVendor(t *testing.T) {
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock": stubFactory(&stubProvider{vendor: "mock"}),
-	})
-	// sendgrid has no factory → no candidate.
-	if _, _, ok := r.Select("c1", provs("sendgrid"), ""); ok {
-		t.Fatal("want ok=false when no registered vendor matches")
+// An unregistered vendor is a configuration problem, and must be distinguishable
+// from a transient one — it's the only outcome that may fail an email outright.
+func TestSelectReportsNoEligibleVendorForUnregisteredVendors(t *testing.T) {
+	r := testRouter(100, 100, factories("mock"))
+
+	if sel := r.Select("c1", provs("sendgrid"), ""); sel.Outcome != SelectNoEligibleVendor {
+		t.Errorf("unregistered vendor: Outcome = %v, want SelectNoEligibleVendor", sel.Outcome)
+	}
+	if sel := r.Select("c1", nil, ""); sel.Outcome != SelectNoEligibleVendor {
+		t.Errorf("no providers at all: Outcome = %v, want SelectNoEligibleVendor", sel.Outcome)
 	}
 }
 
-func TestSelectNoProviders(t *testing.T) {
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock": stubFactory(&stubProvider{vendor: "mock"}),
-	})
-	if _, _, ok := r.Select("c1", nil, ""); ok {
-		t.Fatal("want ok=false with no providers")
+// An exhausted bucket is backpressure, not a failure — it has to be told apart
+// from both of the above so the send is deferred rather than failed.
+func TestSelectReportsNoCapacityWhenTheBucketIsEmpty(t *testing.T) {
+	r := testRouter(1, 0, factories("mock"))
+
+	if sel := r.Select("c1", provs("mock"), ""); sel.Outcome != SelectOK {
+		t.Fatalf("first select should consume the single token, got %v", sel.Outcome)
+	}
+	if sel := r.Select("c1", provs("mock"), ""); sel.Outcome != SelectNoCapacity {
+		t.Fatalf("Outcome = %v, want SelectNoCapacity", sel.Outcome)
 	}
 }
 
-func TestSelectHighestTokenCount(t *testing.T) {
-	r := testRouter(t, 100, 0, map[string]provider.Factory{
-		"mock":   stubFactory(&stubProvider{vendor: "mock"}),
-		"resend": stubFactory(&stubProvider{vendor: "resend"}),
-	})
-	// Drain mock's bucket below resend's so resend wins on capacity.
+func TestSelectPicksTheVendorWithTheMostTokens(t *testing.T) {
+	r := testRouter(100, 0, factories("mock", "resend"))
 	r.mu.Lock()
 	r.stateForLocked("c1", "mock").bucket.tokens = 1
 	r.stateForLocked("c1", "resend").bucket.tokens = 50
 	r.mu.Unlock()
 
-	vendor, _, ok := r.Select("c1", provs("mock", "resend"), "")
-	if !ok || vendor != "resend" {
-		t.Fatalf("want resend (more tokens), got %q ok=%v", vendor, ok)
+	sel := r.Select("c1", provs("mock", "resend"), "")
+
+	if sel.Outcome != SelectOK || sel.Vendor != "resend" {
+		t.Fatalf("Select = %+v, want resend (more tokens)", sel)
 	}
 }
 
-func TestSelectConsumesTokenAndExhausts(t *testing.T) {
-	r := testRouter(t, 1, 0, map[string]provider.Factory{
-		"mock": stubFactory(&stubProvider{vendor: "mock"}),
-	})
-	if _, _, ok := r.Select("c1", provs("mock"), ""); !ok {
-		t.Fatal("first select should succeed (1 token)")
-	}
-	if _, _, ok := r.Select("c1", provs("mock"), ""); ok {
-		t.Fatal("second select should fail (bucket exhausted)")
-	}
-}
-
-func TestSendTripsBreakerAndSelectExcludes(t *testing.T) {
+func TestSendTripsTheBreakerAfterRepeatedFailures(t *testing.T) {
 	stub := &stubProvider{vendor: "mock", err: provider.ErrTransient}
-	r := testRouter(t, 100, 100, map[string]provider.Factory{
-		"mock": stubFactory(stub),
-	})
-	// Two failures with ratio 1.0 ≥ 0.5 over min 2 requests trips the breaker.
-	for i := 0; i < 2; i++ {
-		_ = r.Send(context.Background(), "c1", "mock", nil, provider.Email{})
-	}
+	r := testRouter(100, 100, map[string]provider.Factory{"mock": stubFactory(stub)})
+
+	tripBreaker(r, "c1", "mock")
+
 	r.mu.Lock()
-	st := r.stateForLocked("c1", "mock")
+	state := r.stateForLocked("c1", "mock").breaker.State()
 	r.mu.Unlock()
-	if st.breaker.State() != gobreaker.StateOpen {
-		t.Fatalf("breaker should be OPEN after 2 failures, got %v", st.breaker.State())
-	}
-	if _, _, ok := r.Select("c1", provs("mock"), ""); ok {
-		t.Fatal("Select should exclude a vendor whose breaker is OPEN")
+	if state != gobreaker.StateOpen {
+		t.Fatalf("breaker state = %v, want open after 2 failures", state)
 	}
 }
 
 func TestRefillCapsAtCapacity(t *testing.T) {
-	r := testRouter(t, 10, 4, map[string]provider.Factory{
-		"mock": stubFactory(&stubProvider{vendor: "mock"}),
-	})
+	r := testRouter(10, 4, factories("mock"))
 	r.mu.Lock()
-	st := r.stateForLocked("c1", "mock")
-	st.bucket.tokens = 9
+	r.stateForLocked("c1", "mock").bucket.tokens = 9
 	r.mu.Unlock()
-	r.Refill() // 9 + 4 = 13, capped to 10
+
+	r.Refill() // 9 + 4 = 13, capped at 10
+
 	r.mu.Lock()
 	got := r.stateForLocked("c1", "mock").bucket.tokens
 	r.mu.Unlock()
 	if got != 10 {
-		t.Fatalf("tokens should cap at capacity 10, got %d", got)
+		t.Fatalf("tokens = %d, want capacity 10", got)
+	}
+}
+
+func TestVendorOfExtractsTheVendorFromAStateKey(t *testing.T) {
+	if got := vendorOf(stateKey("client-1", "resend")); got != "resend" {
+		t.Errorf("vendorOf = %q, want resend", got)
+	}
+	if got := vendorOf("no-separator"); got != "no-separator" {
+		t.Errorf("vendorOf on a malformed key = %q, want the key itself", got)
 	}
 }

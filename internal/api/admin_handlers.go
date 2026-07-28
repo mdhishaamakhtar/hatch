@@ -4,13 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	"go.uber.org/zap"
@@ -272,10 +270,3 @@ func (s *Server) parseClientIDParam(w http.ResponseWriter, r *http.Request, key 
 	}
 	return id, true
 }
-
-// Silence unused-import warnings on builds where this file is the only one
-// touching pgx/errors (handlers don't otherwise use these directly).
-var (
-	_ = errors.Is
-	_ = pgx.ErrNoRows
-)

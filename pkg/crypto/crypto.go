@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/tink-crypto/tink-go/v2/aead"
@@ -28,7 +29,7 @@ type Cipher struct {
 // cmd/tinkgen) and returns a primitive ready to Encrypt and Decrypt.
 func LoadCipher(b64 string) (*Cipher, error) {
 	if b64 == "" {
-		return nil, fmt.Errorf("provider cred key empty")
+		return nil, errors.New("provider cred key empty")
 	}
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {

@@ -90,7 +90,7 @@ func (v *Verifier) checkReconciliation(ctx context.Context) {
 	}
 	defer producer.Close()
 
-	pass1, pass2, err := recon.ReconcileOnce(ctx, gen.New(v.pool), recon.NewKgoProducer(producer), otel.Tracer("verify"), v.lg)
+	pass1, pass2, err := recon.ReconcileOnce(ctx, gen.New(v.pool), hkafka.NewRecordProducer(producer), otel.Tracer("verify"), v.lg)
 	if err != nil {
 		v.rep.Failf("ReconcileOnce: %v", err)
 		return
