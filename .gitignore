@@ -49,3 +49,6 @@ helm/*/*.tgz
 /api
 /scheduler
 .zed
+CODEBASE_GUIDE.md
+BUGS.md
+tracer_walkthrough.md
