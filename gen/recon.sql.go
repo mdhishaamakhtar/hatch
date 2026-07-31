@@ -17,7 +17,7 @@ SET status = 'processing',
     retry_count = 0,
     last_provider = NULL,
     updated_at = now()
-WHERE (status = 'pending'    AND deliver_at < now())
+WHERE (status = 'pending'    AND deliver_at < now() - interval '5 minutes')
    OR (status = 'processing' AND updated_at < now() - interval '10 minutes')
 RETURNING id, deliver_at
 `
@@ -30,6 +30,11 @@ type ReconPass1FreshAttemptRow struct {
 // Stuck pending or processing rows: no real attempt was made yet. Reset retry
 // state, mark processing, return the (id, deliver_at) pairs so the cron can
 // re-enqueue to emails.due.
+//
+// The 5-minute grace on the pending arm matters: a row the scheduler fired
+// seconds ago is still `pending` until the worker's MarkProcessing lands. Without
+// the grace window every sweep would claim rows that are merely in flight and
+// re-enqueue them, producing guaranteed duplicates on a busy system.
 func (q *Queries) ReconPass1FreshAttempt(ctx context.Context) ([]ReconPass1FreshAttemptRow, error) {
 	rows, err := q.db.Query(ctx, reconPass1FreshAttempt)
 	if err != nil {

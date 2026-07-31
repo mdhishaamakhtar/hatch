@@ -22,7 +22,7 @@ const (
 	archiveNotReadyPartition = "scheduled_emails_y2019m01"
 )
 
-// checkArchival drives the real archival.ArchiveOnce against two isolated past
+// checkArchival drives a real archival sweep against two isolated past
 // partitions it creates from scratch, proving the eligibility gate and the
 // detach→export→drop lifecycle without disturbing the 1200-partition runway:
 //
@@ -68,7 +68,7 @@ func (v *Verifier) checkArchival(ctx context.Context) {
 	// Seed the ready partition with terminal rows (route by deliver_at into 2020-01)
 	// and the not-ready partition with one non-terminal row (2019-01).
 	readyIDs := make([][]byte, 0, 3)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		id := db.UUIDToBytes(uuid.New())
 		readyIDs = append(readyIDs, id)
 		if _, err := v.pool.Exec(ctx,
@@ -102,9 +102,9 @@ func (v *Verifier) checkArchival(ctx context.Context) {
 	defer func() { _ = os.RemoveAll(archiveDir) }()
 
 	cfg := archival.Config{ArchiveDir: archiveDir}
-	checked, archived, err := archival.ArchiveOnce(ctx, v.pool, gen.New(v.pool), cfg, otel.Tracer("verify"), v.lg)
+	checked, archived, err := archival.NewArchiver(v.pool, gen.New(v.pool), cfg, otel.Tracer("verify"), v.lg).Run(ctx)
 	if err != nil {
-		v.rep.Failf("ArchiveOnce: %v", err)
+		v.rep.Failf("archival run: %v", err)
 		return
 	}
 	v.rep.Check(archived >= 1 && checked >= 2,

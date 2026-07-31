@@ -29,5 +29,5 @@ type Config struct {
 	// sync target.
 	ArchiveDir string `env:"ARCHIVE_DIR" envDefault:"/archive"`
 
-	ShutdownTimeoutMS int `env:"ARCHIVAL_SHUTDOWN_MS" envDefault:"10000"`
+	ShutdownTimeout time.Duration `env:"ARCHIVAL_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 }

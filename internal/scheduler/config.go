@@ -5,8 +5,9 @@
 package scheduler
 
 import (
-	"strings"
 	"time"
+
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 )
 
 // Config is loaded once at boot via pkg/config.Load[Config]. Each Hatch service
@@ -30,7 +31,7 @@ type Config struct {
 	ScheduleChannelBuffer int `env:"SCHEDULER_SCHEDULE_CHANNEL_BUFFER" envDefault:"100000"`
 	ClearChannelBuffer    int `env:"SCHEDULER_CLEAR_CHANNEL_BUFFER"    envDefault:"64"`
 
-	ShutdownTimeoutMS int `env:"SCHEDULER_SHUTDOWN_MS" envDefault:"10000"`
+	ShutdownTimeout time.Duration `env:"SCHEDULER_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 
 	// PollInterval is the cadence of G1. Defaults to 1h per LLD.
 	// Surfaced as a knob so tests don't need to wait an hour.
@@ -38,14 +39,4 @@ type Config struct {
 }
 
 // Brokers splits KafkaBrokers into a slice of broker addresses.
-func (c Config) Brokers() []string {
-	parts := strings.Split(c.KafkaBrokers, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+func (c Config) Brokers() []string { return kafka.ParseBrokers(c.KafkaBrokers) }

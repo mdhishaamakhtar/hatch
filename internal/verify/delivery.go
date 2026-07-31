@@ -106,7 +106,7 @@ func (v *Verifier) checkResendDelivery(ctx context.Context) {
 	v.rep.Passf("POST resend schedule → 201 (schedule_id=%s, %s → %s)", schedID, v.cfg.ResendFrom, v.cfg.ResendTo)
 
 	// Trigger an out-of-band poll on every shard so the wheel loads the row now.
-	for i := 0; i < v.cfg.SchedReplicas; i++ {
+	for i := range v.cfg.SchedReplicas {
 		_, _ = v.do(ctx, http.MethodPost, v.cfg.SchedulerURL(i)+"/internal/poll", v.cfg.AdminKey, nil)
 	}
 

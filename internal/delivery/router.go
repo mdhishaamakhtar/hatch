@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,7 +85,13 @@ func NewRouter(
 	}
 }
 
-func stateKey(clientID, vendor string) string { return clientID + "|" + vendor }
+// stateKeySep joins client id and vendor into a states map key. Neither part
+// can contain it: client ids are UUIDs and vendors come from a fixed allowlist.
+const stateKeySep = '|'
+
+func stateKey(clientID, vendor string) string {
+	return clientID + string(stateKeySep) + vendor
+}
 
 // Refill tops up every bucket. Called by G3 on each tick.
 func (r *Router) Refill() {
@@ -96,9 +103,36 @@ func (r *Router) Refill() {
 	}
 }
 
+// Selection is the outcome of a Select call. Outcome tells the processor which
+// of three very different situations it is in; Vendor and Creds are only set
+// when Outcome is SelectOK.
+type Selection struct {
+	Outcome SelectOutcome
+	Vendor  string
+	Creds   []byte
+}
+
+// SelectOutcome distinguishes the reasons a send may not proceed. They demand
+// opposite responses, so collapsing them into a single bool is what turns a
+// vendor blip or a burst of traffic into a permanently failed email.
+type SelectOutcome int
+
+const (
+	// SelectOK — a vendor was chosen and a token consumed.
+	SelectOK SelectOutcome = iota
+	// SelectNoEligibleVendor — the client has no provider with a registered
+	// implementation. A configuration problem, and genuinely terminal.
+	SelectNoEligibleVendor
+	// SelectBreakerOpen — every candidate's circuit breaker is OPEN. A transient
+	// vendor outage: route to the retry tiers, don't fail the email.
+	SelectBreakerOpen
+	// SelectNoCapacity — candidates exist and are healthy, but their leaky
+	// buckets are empty. Pure backpressure: wait for a refill and reselect.
+	SelectNoCapacity
+)
+
 // Select runs the LLD selection algorithm and consumes one token from the chosen
-// vendor's bucket. Returns ok=false when no vendor remains (no registered impl,
-// OPEN breaker, or no capacity).
+// vendor's bucket.
 //
 // last_provider exclusion is best-effort: it avoids immediately re-hitting the
 // vendor that just failed *when an alternative exists*. If excluding it would
@@ -106,30 +140,58 @@ func (r *Router) Refill() {
 // exclusion is dropped and we retry on it anyway. The retry tiers exist to
 // reattempt transient failures, so a single-provider client must not be stranded
 // with no_active_providers after one transient blip; a genuinely unhealthy sole
-// provider still trips its breaker and yields no candidate.
-func (r *Router) Select(clientID string, providers []cachedProvider, lastProvider string) (vendor string, creds []byte, ok bool) {
+// provider still trips its breaker and yields SelectBreakerOpen.
+func (r *Router) Select(clientID string, providers []cachedProvider, lastProvider string) Selection {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// First pass: prefer any healthy vendor other than the one that just failed.
-	vendor, creds, best := r.pickBestLocked(clientID, providers, lastProvider)
-	if best == nil && lastProvider != "" {
+	pick := r.pickBestLocked(clientID, providers, lastProvider)
+	if pick.state == nil && lastProvider != "" {
 		// The just-failed vendor is the only eligible option — retry on it rather
 		// than failing the send for lack of an alternative.
-		vendor, creds, best = r.pickBestLocked(clientID, providers, "")
+		pick = r.pickBestLocked(clientID, providers, "")
 	}
-	if best == nil || !best.bucket.take() {
-		return "", nil, false
+	switch {
+	case pick.state == nil:
+		return Selection{Outcome: pick.emptyOutcome()}
+	case !pick.state.bucket.take():
+		return Selection{Outcome: SelectNoCapacity}
 	}
-	mBucketTokens.WithLabelValues(vendor).Set(float64(best.bucket.tokens))
-	return vendor, creds, true
+	mBucketTokens.WithLabelValues(pick.vendor).Set(float64(pick.state.bucket.tokens))
+	return Selection{Outcome: SelectOK, Vendor: pick.vendor, Creds: pick.creds}
+}
+
+// pick is pickBestLocked's result: the winning vendor (state nil if none), plus
+// enough detail to say *why* nothing won.
+type pick struct {
+	vendor       string
+	creds        []byte
+	state        *vendorState
+	sawCandidate bool // a vendor with a registered implementation existed
+	sawOpen      bool // at least one such vendor was skipped for an OPEN breaker
+}
+
+// emptyOutcome classifies a pick that found no vendor.
+func (p pick) emptyOutcome() SelectOutcome {
+	switch {
+	case p.sawOpen:
+		return SelectBreakerOpen
+	case p.sawCandidate:
+		// Candidates existed and were closed, so the only way none won the
+		// highest-tokens comparison is that they all sat at zero tokens.
+		return SelectNoCapacity
+	default:
+		return SelectNoEligibleVendor
+	}
 }
 
 // pickBestLocked scans providers for the highest-token vendor that has a
 // registered implementation and a non-OPEN breaker, optionally skipping
 // excludeVendor. It does not consume a token — the caller takes one from the
-// returned state. Returns a nil state when nothing qualifies. Caller holds r.mu.
-func (r *Router) pickBestLocked(clientID string, providers []cachedProvider, excludeVendor string) (vendor string, creds []byte, best *vendorState) {
+// returned state. Caller holds r.mu.
+func (r *Router) pickBestLocked(clientID string, providers []cachedProvider, excludeVendor string) pick {
+	var out pick
 	bestTokens := 0
 	for _, p := range providers {
 		if _, has := r.factories[p.Vendor]; !has {
@@ -138,18 +200,20 @@ func (r *Router) pickBestLocked(clientID string, providers []cachedProvider, exc
 		if excludeVendor != "" && p.Vendor == excludeVendor {
 			continue // skip the vendor that just failed (when an alternative exists)
 		}
+		out.sawCandidate = true
 		st := r.stateForLocked(clientID, p.Vendor)
 		if st.breaker.State() == gobreaker.StateOpen {
+			out.sawOpen = true
 			continue
 		}
 		if st.bucket.tokens > bestTokens {
 			bestTokens = st.bucket.tokens
-			best = st
-			vendor = p.Vendor
-			creds = p.Credentials
+			out.state = st
+			out.vendor = p.Vendor
+			out.creds = p.Credentials
 		}
 	}
-	return vendor, creds, best
+	return out
 }
 
 // Send builds (or reuses) the per-client provider and runs the send through the
@@ -228,10 +292,8 @@ func (r *Router) breakerSettings(vendor string) gobreaker.Settings {
 
 // vendorOf extracts the vendor from a "clientID|vendor" state key.
 func vendorOf(key string) string {
-	for i := len(key) - 1; i >= 0; i-- {
-		if key[i] == '|' {
-			return key[i+1:]
-		}
+	if i := strings.LastIndexByte(key, stateKeySep); i >= 0 {
+		return key[i+1:]
 	}
 	return key
 }

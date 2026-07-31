@@ -2,31 +2,16 @@ package api
 
 import (
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
+	"github.com/mdhishaamakhtar/hatch/pkg/httpx"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
-
-// bearerToken extracts the token from an "Authorization: Bearer <x>" header.
-// Returns "" if the header is missing or malformed.
-func bearerToken(r *http.Request) string {
-	v := r.Header.Get("Authorization")
-	if v == "" {
-		return ""
-	}
-	const prefix = "Bearer "
-	if !strings.HasPrefix(v, prefix) {
-		return ""
-	}
-	return strings.TrimSpace(v[len(prefix):])
-}
 
 // sha256Bytes is the deterministic per-key lookup value stored in
 // clients.api_key_lookup. bcrypt would be non-deterministic and therefore not
@@ -42,7 +27,7 @@ func sha256Bytes(s string) []byte {
 func ClientAuth(q *gen.Queries, lg *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tok := bearerToken(r)
+			tok := httpx.BearerToken(r)
 			if tok == "" {
 				writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "missing_bearer")
 				return
@@ -72,22 +57,6 @@ func ClientAuth(q *gen.Queries, lg *zap.Logger) func(http.Handler) http.Handler 
 			ctx := withClientID(r.Context(), clientID)
 			ctx = withMaxRPS(ctx, row.MaxRps)
 			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}
-
-// AdminAuth gates /admin and /internal routes behind a single static
-// shared key. Constant-time compare against the configured admin key.
-func AdminAuth(adminKey string) func(http.Handler) http.Handler {
-	expected := []byte(adminKey)
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got := []byte(bearerToken(r))
-			if subtle.ConstantTimeCompare(got, expected) != 1 {
-				writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "")
-				return
-			}
-			next.ServeHTTP(w, r)
 		})
 	}
 }

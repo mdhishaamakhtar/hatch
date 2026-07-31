@@ -5,15 +5,9 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
-	"os/signal"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/mdhishaamakhtar/hatch/gen"
@@ -21,26 +15,13 @@ import (
 	"github.com/mdhishaamakhtar/hatch/pkg/config"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	hkafka "github.com/mdhishaamakhtar/hatch/pkg/kafka"
-	"github.com/mdhishaamakhtar/hatch/pkg/logger"
-	"github.com/mdhishaamakhtar/hatch/pkg/tracer"
+	"github.com/mdhishaamakhtar/hatch/pkg/service"
 	"github.com/mdhishaamakhtar/hatch/pkg/wheelstore"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
-func main() {
-	// fmt is only acceptable for events BEFORE the logger exists.
-	lg, err := logger.New("scheduler-service")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "logger init failed:", err)
-		os.Exit(1)
-	}
-	defer func() { _ = lg.Sync() }()
-
-	if err := run(lg); err != nil {
-		lg.Fatal("scheduler-service startup failed", zap.Error(err))
-	}
-}
+func main() { service.Main("scheduler-service", run) }
 
 // seedPodIndex populates POD_INDEX from the pod hostname when running inside a
 // StatefulSet with a distroless image (no shell available for the wrapper trick).
@@ -53,10 +34,7 @@ func seedPodIndex() {
 	if err != nil {
 		return
 	}
-	parts := strings.Split(host, "-")
-	if len(parts) > 0 {
-		_ = os.Setenv("POD_INDEX", parts[len(parts)-1])
-	}
+	_ = os.Setenv("POD_INDEX", host[strings.LastIndex(host, "-")+1:])
 }
 
 func run(lg *zap.Logger) error {
@@ -72,20 +50,14 @@ func run(lg *zap.Logger) error {
 		return fmt.Errorf("POD_INDEX %d out of range for TOTAL_PODS=%d", cfg.PodIndex, cfg.TotalPods)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := service.SignalContext()
 	defer cancel()
 
-	tracerShutdown, err := tracer.Init(ctx, "scheduler-service", cfg.OTLPEndpoint)
+	flushTraces, err := service.InitTracer(ctx, lg, "scheduler-service", cfg.OTLPEndpoint)
 	if err != nil {
-		return fmt.Errorf("tracer: %w", err)
+		return err
 	}
-	defer func() {
-		shutdownCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
-		defer c()
-		if err := tracerShutdown(shutdownCtx); err != nil {
-			lg.Warn("tracer shutdown", zap.Error(err))
-		}
-	}()
+	defer flushTraces()
 	tr := otel.Tracer("scheduler-service")
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
@@ -94,12 +66,11 @@ func run(lg *zap.Logger) error {
 	}
 	defer pool.Close()
 
-	cl, err := hkafka.NewProducer(cfg.Brokers(), lg)
+	prodCl, err := hkafka.NewProducer(cfg.Brokers(), lg)
 	if err != nil {
 		return fmt.Errorf("kafka producer: %w", err)
 	}
-	defer cl.Close()
-	producer := scheduler.NewKgoProducer(cl)
+	defer prodCl.Close()
 
 	store, err := wheelstore.Open(cfg.WheelDBPath)
 	if err != nil {
@@ -112,55 +83,18 @@ func run(lg *zap.Logger) error {
 		return fmt.Errorf("wheel recovery: %w", err)
 	}
 
-	queries := gen.New(pool)
-
-	schedC := make(chan scheduler.Entry, cfg.ScheduleChannelBuffer)
-	clearC := make(chan string, cfg.ClearChannelBuffer)
-	// Buffered so the admin handler's non-blocking send always lands a pending
-	// poll even if the poller is mid-cycle.
-	pollTrigger := make(chan struct{}, 1)
+	pipeline := scheduler.NewPipeline(cfg, lg, wheel, store, gen.New(pool),
+		hkafka.NewRecordProducer(prodCl), tr)
 
 	scheduler.RecordPodIdentity(cfg.PodIndex, cfg.TotalPods)
 
-	go scheduler.RunPoller(ctx, lg, cfg, queries, schedC, tr, nil, pollTrigger)
-	go scheduler.RunBuilder(ctx, lg, schedC, clearC, wheel, store, cfg.PodIndex, tr)
-	go scheduler.RunTicker(ctx, lg, wheel, clearC, producer, cfg.PodIndex, tr, nil, nil)
+	go pipeline.RunPoller(ctx, nil)
+	go pipeline.RunBuilder(ctx)
+	go pipeline.RunTicker(ctx, nil)
 
-	srv := scheduler.NewServer(cfg, lg, pool, wheel, func() bool { return true }, producer, pollTrigger)
-	httpServer := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.AdminPort),
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	listenErr := make(chan error, 1)
-	go func() {
-		lg.Info("scheduler-service listening",
-			zap.Int("admin_port", cfg.AdminPort),
-			zap.Int("pod_index", cfg.PodIndex),
-			zap.Int("total_pods", cfg.TotalPods),
-		)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			listenErr <- err
-		}
-		close(listenErr)
-	}()
-
-	select {
-	case err := <-listenErr:
-		return fmt.Errorf("http listen: %w", err)
-	case <-ctx.Done():
-		lg.Info("shutdown signal received, draining")
-	}
-
-	shutdownCtx, c := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutMS)*time.Millisecond)
-	defer c()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("http shutdown: %w", err)
-	}
-	lg.Info("scheduler-service stopped cleanly")
-	return nil
+	srv := scheduler.NewServer(cfg, lg, pool, pipeline, func() bool { return true })
+	return service.Serve(ctx, lg, "scheduler-service", cfg.AdminPort, srv.Handler(), cfg.ShutdownTimeout,
+		zap.Int("pod_index", cfg.PodIndex),
+		zap.Int("total_pods", cfg.TotalPods),
+	)
 }

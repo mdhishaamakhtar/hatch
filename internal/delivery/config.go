@@ -7,9 +7,9 @@
 package delivery
 
 import (
-	"strings"
 	"time"
 
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 	"github.com/mdhishaamakhtar/hatch/pkg/provider"
 )
 
@@ -48,23 +48,14 @@ type Config struct {
 	BreakerFailureRatio float64       `env:"DELIVERY_BREAKER_FAILURE_RATIO" envDefault:"0.5"`
 	BreakerOpenTimeout  time.Duration `env:"DELIVERY_BREAKER_OPEN_TIMEOUT"  envDefault:"30s"`
 
-	ShutdownTimeoutMS int `env:"DELIVERY_SHUTDOWN_MS" envDefault:"10000"`
+	ShutdownTimeout time.Duration `env:"DELIVERY_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 
 	// Mock provider tuning (MOCK_PROVIDER_* env). Parsed into the nested struct.
 	Mock provider.MockConfig
 }
 
 // Brokers splits KafkaBrokers into a slice of broker addresses.
-func (c Config) Brokers() []string {
-	parts := strings.Split(c.KafkaBrokers, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+func (c Config) Brokers() []string { return kafka.ParseBrokers(c.KafkaBrokers) }
 
 // RefillPerTick is how many tokens each leaky bucket gains per G3 tick, derived
 // from the steady-state rate and the tick cadence. Always at least 1.

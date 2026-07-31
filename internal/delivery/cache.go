@@ -16,9 +16,11 @@ import (
 // processor leaves the row `processing` so reconciliation re-enqueues it.
 var errCacheUnavailable = errors.New("client cache unavailable")
 
-// redisBackoffs is the inter-attempt delay schedule for transient Redis errors
-// (LLD: up to 3 attempts at 50/100/200ms). Shared by the cache and idempotency.
+// Transient Redis errors get up to redisAttempts (3) tries, spaced by redisBackoffs
+// (LLD: 3 attempts at 50/100/200ms). Shared by the cache and idempotency store.
 var redisBackoffs = []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond}
+
+const redisAttempts = 3
 
 // cachedProvider mirrors one active client_providers row. Credentials stays the
 // encrypted Tink envelope; the router decrypts it only when building a real
@@ -89,7 +91,7 @@ func (c *clientCache) Get(ctx context.Context, clientID []byte) (clientInfo, err
 // nil error; connection errors are retried before surfacing.
 func (c *clientCache) redisGet(ctx context.Context, key string) ([]byte, bool, error) {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range redisAttempts {
 		if attempt > 0 && !sleep(ctx, redisBackoffs[attempt-1]) {
 			return nil, false, ctx.Err()
 		}

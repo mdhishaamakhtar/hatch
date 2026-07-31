@@ -3,10 +3,11 @@ package wheelstore
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-func makeID(b byte) [16]byte {
-	var id [16]byte
+func makeID(b byte) [idLen]byte {
+	var id [idLen]byte
 	for i := range id {
 		id[i] = b
 	}
@@ -15,8 +16,7 @@ func makeID(b byte) [16]byte {
 
 func openTemp(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "wheel.db")
-	s, err := Open(path)
+	s, err := Open(filepath.Join(t.TempDir(), "wheel.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -24,90 +24,94 @@ func openTemp(t *testing.T) *Store {
 	return s
 }
 
-func TestAppendThenRange(t *testing.T) {
-	s := openTemp(t)
-	want := []struct {
-		slot string
-		ids  [][16]byte
-	}{
-		{"00:01", [][16]byte{makeID(1)}},
-		{"32:47", [][16]byte{makeID(2), makeID(3), makeID(4)}},
-	}
-	for _, w := range want {
-		for _, id := range w.ids {
-			if err := s.Append(w.slot, id); err != nil {
-				t.Fatalf("Append(%s): %v", w.slot, err)
-			}
-		}
-	}
-	got := map[string][][16]byte{}
-	if err := s.Range(func(slot string, ids [][16]byte) error {
-		got[slot] = ids
+// collect drains the store into a map for assertion.
+func collect(t *testing.T, s *Store) map[string][]Entry {
+	t.Helper()
+	got := map[string][]Entry{}
+	if err := s.Range(func(slot string, entries []Entry) error {
+		got[slot] = entries
 		return nil
 	}); err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	for _, w := range want {
-		gids := got[w.slot]
-		if len(gids) != len(w.ids) {
-			t.Fatalf("slot %s: got %d ids, want %d", w.slot, len(gids), len(w.ids))
+	return got
+}
+
+func TestAppendPreservesOrderAndDeliverAt(t *testing.T) {
+	s := openTemp(t)
+	// Truncated to the second: that's the resolution the packed value stores.
+	base := time.Now().Truncate(time.Second)
+
+	if err := s.Append("00:01", makeID(1), base); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	for i, b := range []byte{2, 3, 4} {
+		if err := s.Append("32:47", makeID(b), base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("Append: %v", err)
 		}
-		for i, id := range w.ids {
-			if gids[i] != id {
-				t.Fatalf("slot %s [%d]: got %x want %x", w.slot, i, gids[i], id)
-			}
+	}
+
+	got := collect(t, s)
+	if len(got["00:01"]) != 1 || got["00:01"][0].ID != makeID(1) {
+		t.Fatalf("slot 00:01 = %v", got["00:01"])
+	}
+	slot := got["32:47"]
+	if len(slot) != 3 {
+		t.Fatalf("slot 32:47 has %d entries, want 3", len(slot))
+	}
+	for i, b := range []byte{2, 3, 4} {
+		if slot[i].ID != makeID(b) {
+			t.Errorf("entry %d id = %x, want %x", i, slot[i].ID, makeID(b))
+		}
+		if want := base.Add(time.Duration(i) * time.Minute); !slot[i].DeliverAt.Equal(want) {
+			t.Errorf("entry %d deliver_at = %v, want %v", i, slot[i].DeliverAt, want)
 		}
 	}
 }
 
-func TestDelete(t *testing.T) {
+func TestDeleteRemovesTheWholeSlot(t *testing.T) {
 	s := openTemp(t)
-	if err := s.Append("11:11", makeID(7)); err != nil {
+	if err := s.Append("11:11", makeID(7), time.Now()); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := s.Delete("11:11"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	count := 0
-	_ = s.Range(func(string, [][16]byte) error { count++; return nil })
-	if count != 0 {
-		t.Fatalf("expected 0 slots after Delete, got %d", count)
+	if got := collect(t, s); len(got) != 0 {
+		t.Fatalf("expected an empty store after Delete, got %v", got)
 	}
 }
 
-func TestPersistAcrossReopen(t *testing.T) {
+// The whole point of the store: survive a pod restart.
+func TestValuesSurviveReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wheel.db")
+	deliverAt := time.Now().Add(time.Hour).Truncate(time.Second)
+
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := s.Append("05:05", makeID(9)); err != nil {
+	if err := s.Append("05:05", makeID(9), deliverAt); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(path)
+	reopened, err := Open(path)
 	if err != nil {
 		t.Fatalf("re-Open: %v", err)
 	}
-	defer s2.Close()
+	defer reopened.Close()
 
-	var found [][16]byte
-	_ = s2.Range(func(slot string, ids [][16]byte) error {
-		if slot == "05:05" {
-			found = ids
-		}
-		return nil
-	})
-	if len(found) != 1 || found[0] != makeID(9) {
-		t.Fatalf("after reopen got %v, want one ID of all-9s", found)
+	got := collect(t, reopened)["05:05"]
+	if len(got) != 1 || got[0].ID != makeID(9) || !got[0].DeliverAt.Equal(deliverAt) {
+		t.Fatalf("after reopen got %v, want id 9 due %v", got, deliverAt)
 	}
 }
 
 func TestDecodeRejectsMisalignedValue(t *testing.T) {
 	if _, err := decode([]byte{1, 2, 3}); err == nil {
-		t.Fatal("expected error for non-16-byte-aligned slot value")
+		t.Fatal("expected an error for a value that isn't a whole number of entries")
 	}
 }

@@ -1,27 +1,24 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/mdhishaamakhtar/hatch/pkg/httpx"
 )
 
-type apiError struct {
-	Error  string `json:"error"`
-	Reason string `json:"reason,omitempty"`
-}
+// apiError is the error response body. It aliases the shared shape so the
+// generated OpenAPI spec can name the type while every service still returns
+// byte-identical errors.
+type apiError = httpx.ErrorBody
 
 // writeError is the single path for non-2xx responses. Body shape is stable
 // across endpoints so clients can branch on `error` and (when present) `reason`.
 func writeError(w http.ResponseWriter, status int, code, reason string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(apiError{Error: code, Reason: reason})
+	httpx.WriteError(w, status, code, reason)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	httpx.WriteJSON(w, status, v)
 }
 
 // Error codes — kept centralised so handlers, tests, and clients agree.

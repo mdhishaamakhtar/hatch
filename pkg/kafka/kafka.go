@@ -10,6 +10,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -64,9 +65,12 @@ type kzap struct{ lg *zap.Logger }
 func (k kzap) Level() kgo.LogLevel { return kgo.LogLevelInfo }
 func (k kzap) Log(level kgo.LogLevel, msg string, keyvals ...any) {
 	fields := make([]zap.Field, 0, len(keyvals)/2)
-	for i := 0; i+1 < len(keyvals); i += 2 {
-		key, _ := keyvals[i].(string)
-		fields = append(fields, zap.Any(key, keyvals[i+1]))
+	for pair := range slices.Chunk(keyvals, 2) {
+		if len(pair) < 2 {
+			break // trailing key with no value
+		}
+		key, _ := pair[0].(string)
+		fields = append(fields, zap.Any(key, pair[1]))
 	}
 	switch level {
 	case kgo.LogLevelError:

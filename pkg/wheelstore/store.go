@@ -1,25 +1,45 @@
 // Package wheelstore persists scheduler timer-wheel slots to bbolt so a pod
 // restart can rebuild the in-memory wheel without re-polling Postgres.
 //
-// Keys are "MM:SS" strings (e.g. "32:47"). Values are packed [16]byte UUIDv7
-// IDs concatenated with no delimiters — N IDs fit in exactly 16*N bytes. The
-// LLD specifies this layout because it is ~55% smaller than UUID strings and
-// the slot count (≤3600) is small enough that read-modify-write per insert is
-// not a bottleneck.
+// Keys are "MM:SS" strings (e.g. "32:47"). Values are packed fixed-width
+// entries with no delimiters — N entries fit in exactly entryLen*N bytes. Each
+// entry is a 16-byte UUIDv7 id followed by its deliver_at as an 8-byte
+// big-endian Unix timestamp.
+//
+// The timestamp is what makes recovery honest. The key alone carries no hour or
+// date, so a pod that was down across an hour boundary cannot tell a slot that
+// fired 50 minutes ago from one due in 10 — it would restore the stale slot as
+// "future" and fire it late. With deliver_at in the value, recovery can simply
+// drop everything already past.
 package wheelstore
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-// idLen is the byte width of a single packed UUID in a slot value.
-const idLen = 16
+const (
+	// idLen is the byte width of a UUID in a packed entry.
+	idLen = 16
+	// tsLen is the byte width of the deliver_at Unix seconds that follow it.
+	tsLen = 8
+	// entryLen is one complete packed entry.
+	entryLen = idLen + tsLen
+)
 
 // bucketName is the single bbolt bucket all slots live in.
 var bucketName = []byte("wheel")
+
+// Entry is one persisted schedule: its id and when it is due.
+type Entry struct {
+	ID        [idLen]byte
+	DeliverAt time.Time
+}
 
 // Store wraps a bbolt DB scoped to the scheduler's wheel state.
 type Store struct {
@@ -33,8 +53,8 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("bbolt open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(bucketName)
-		return e
+		_, err := tx.CreateBucketIfNotExists(bucketName)
+		return err
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("bbolt bucket: %w", err)
@@ -45,17 +65,18 @@ func Open(path string) (*Store, error) {
 // Close releases the underlying bbolt file handle.
 func (s *Store) Close() error { return s.db.Close() }
 
-// Append appends id to the slot's packed value in a single write transaction.
-// Concurrent appends to the same slot are serialised by bbolt's writer lock.
-func (s *Store) Append(slot string, id [idLen]byte) error {
+// Append appends an entry to the slot's packed value in a single write
+// transaction. Concurrent appends to the same slot are serialised by bbolt's
+// writer lock.
+func (s *Store) Append(slot string, id [idLen]byte, deliverAt time.Time) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		key := []byte(slot)
-		existing := b.Get(key)
 		// bbolt's Get returns a slice owned by the mmap — copy before mutation.
-		next := make([]byte, 0, len(existing)+idLen)
+		existing := b.Get(key)
+		next := make([]byte, 0, len(existing)+entryLen)
 		next = append(next, existing...)
-		next = append(next, id[:]...)
+		next = append(next, encodeEntry(Entry{ID: id, DeliverAt: deliverAt})...)
 		return b.Put(key, next)
 	})
 }
@@ -69,28 +90,36 @@ func (s *Store) Delete(slot string) error {
 
 // Range invokes fn for every slot present in the store. Decoding errors abort
 // the iteration. Used by recovery on pod startup.
-func (s *Store) Range(fn func(slot string, ids [][idLen]byte) error) error {
+func (s *Store) Range(fn func(slot string, entries []Entry) error) error {
 	return s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
-			ids, err := decode(v)
+			entries, err := decode(v)
 			if err != nil {
 				return fmt.Errorf("slot %s: %w", string(k), err)
 			}
-			return fn(string(k), ids)
+			return fn(string(k), entries)
 		})
 	})
 }
 
-// decode unpacks a slot value into a slice of fixed-size UUIDs.
-func decode(v []byte) ([][idLen]byte, error) {
-	if len(v)%idLen != 0 {
-		return nil, errors.New("slot value not aligned to 16 bytes")
+func encodeEntry(e Entry) []byte {
+	buf := make([]byte, entryLen)
+	copy(buf[:idLen], e.ID[:])
+	binary.BigEndian.PutUint64(buf[idLen:], uint64(e.DeliverAt.Unix()))
+	return buf
+}
+
+// decode unpacks a slot value into its entries.
+func decode(v []byte) ([]Entry, error) {
+	if len(v)%entryLen != 0 {
+		return nil, errors.New("slot value not aligned to entry width")
 	}
-	out := make([][idLen]byte, 0, len(v)/idLen)
-	for i := 0; i < len(v); i += idLen {
-		var id [idLen]byte
-		copy(id[:], v[i:i+idLen])
-		out = append(out, id)
+	out := make([]Entry, 0, len(v)/entryLen)
+	for chunk := range slices.Chunk(v, entryLen) {
+		var e Entry
+		copy(e.ID[:], chunk[:idLen])
+		e.DeliverAt = time.Unix(int64(binary.BigEndian.Uint64(chunk[idLen:])), 0)
+		out = append(out, e)
 	}
 	return out, nil
 }

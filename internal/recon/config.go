@@ -1,8 +1,9 @@
 package recon
 
 import (
-	"strings"
 	"time"
+
+	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
 )
 
 // Config is loaded once at boot via pkg/config.Load[Config]. The reconciliation
@@ -27,17 +28,8 @@ type Config struct {
 	// last-run gauge and recovery counters appear without waiting a full interval.
 	RunOnStart bool `env:"RECON_RUN_ON_START" envDefault:"true"`
 
-	ShutdownTimeoutMS int `env:"RECON_SHUTDOWN_MS" envDefault:"10000"`
+	ShutdownTimeout time.Duration `env:"RECON_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 }
 
 // Brokers splits KafkaBrokers into a slice of broker addresses.
-func (c Config) Brokers() []string {
-	parts := strings.Split(c.KafkaBrokers, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+func (c Config) Brokers() []string { return kafka.ParseBrokers(c.KafkaBrokers) }
