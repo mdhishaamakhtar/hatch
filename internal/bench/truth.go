@@ -15,12 +15,12 @@ import (
 // metric, so it cannot be wrong because of a missed scrape, a counter reset, or
 // an exporter that was never deployed.
 type StatusCounts struct {
-	Pending    int
-	Processing int
-	Retrying   int
-	Delivered  int
-	Failed     int
-	Cancelled  int
+	Pending    int `json:"pending"`
+	Processing int `json:"processing"`
+	Retrying   int `json:"retrying"`
+	Delivered  int `json:"delivered"`
+	Failed     int `json:"failed"`
+	Cancelled  int `json:"cancelled"`
 }
 
 // Total is every row the benchmark created.
@@ -43,6 +43,11 @@ func (s StatusCounts) String() string {
 type observer struct {
 	pool     *pgxpool.Pool
 	clientID []byte
+
+	// Peak Postgres backends seen while the pipeline was busy, and the server's
+	// limit, both filled in by waitForDrain.
+	peakConns int
+	maxConns  int
 }
 
 func newObserver(pool *pgxpool.Pool, clientID string) (*observer, error) {
@@ -113,6 +118,24 @@ type drainState struct {
 	TimedOut bool
 }
 
+// connections reports how many Postgres backends are in use and the server's
+// limit.
+//
+// Sampled during the drain rather than after it: connection pressure is a
+// property of the busy period, and by the time a run finishes the pools have
+// gone idle and the number is meaningless. Each pod runs many sends at once but
+// pgx sizes its pool from CPU count, so this is where "concurrency outran the
+// connection pool" would become visible instead of being guessed at.
+func (o *observer) connections(ctx context.Context) (inUse, max int, err error) {
+	if err := o.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity`).Scan(&inUse); err != nil {
+		return 0, 0, err
+	}
+	if err := o.pool.QueryRow(ctx, `SELECT current_setting('max_connections')::int`).Scan(&max); err != nil {
+		return inUse, 0, err
+	}
+	return inUse, max, nil
+}
+
 // waitForDrain polls until every row the benchmark created is terminal, or the
 // timeout expires.
 //
@@ -121,6 +144,7 @@ type drainState struct {
 // stronger claim anyway — lag reaching zero only means the messages were
 // consumed, not that the work they represent actually completed.
 func (o *observer) waitForDrain(ctx context.Context, expect int, timeout, interval time.Duration, onSample func(drainState)) (drainState, error) {
+	o.peakConns, o.maxConns = 0, 0
 	start := time.Now()
 	deadline := start.Add(timeout)
 	ticker := time.NewTicker(interval)
@@ -131,6 +155,13 @@ func (o *observer) waitForDrain(ctx context.Context, expect int, timeout, interv
 		if err != nil {
 			return drainState{}, err
 		}
+		if inUse, max, cerr := o.connections(ctx); cerr == nil {
+			if inUse > o.peakConns {
+				o.peakConns = inUse
+			}
+			o.maxConns = max
+		}
+
 		state := drainState{Counts: counts, Waited: time.Since(start)}
 		state.Settled = counts.Terminal() >= expect
 		state.TimedOut = !state.Settled && time.Now().After(deadline)

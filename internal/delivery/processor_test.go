@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
@@ -158,7 +160,7 @@ func newHarness(t *testing.T, opts ...func(*harness)) *harness {
 		opt(h)
 	}
 	h.proc = NewProcessor(zap.NewNop(), h.store, fakeCache{info: activeClient("mock")},
-		h.idem, h.router, h.prod, noop.NewTracerProvider().Tracer("test"), 3)
+		h.idem, h.router, h.prod, noop.NewTracerProvider().Tracer("test"), 3, 1)
 	return h
 }
 
@@ -175,7 +177,7 @@ func newHarnessWithCache(t *testing.T, cache fakeCache, opts ...func(*harness)) 
 		opt(h)
 	}
 	h.proc = NewProcessor(zap.NewNop(), h.store, cache, h.idem, h.router, h.prod,
-		noop.NewTracerProvider().Tracer("test"), 3)
+		noop.NewTracerProvider().Tracer("test"), 3, 1)
 	return h
 }
 
@@ -491,5 +493,175 @@ func TestProcessBatchStopsAtShutdown(t *testing.T) {
 
 	if h.store.processed != 0 {
 		t.Errorf("no row should be processed after cancellation, got %d", h.store.processed)
+	}
+}
+
+// --- concurrency ---
+
+// concurrentStore is a race-safe Store recording how many sends overlapped. The
+// package's fakeStore is deliberately lock-free for the sequential tests, so the
+// concurrency tests bring their own.
+type concurrentStore struct {
+	mu        sync.Mutex
+	rows      []gen.ScheduledEmail
+	delivered int
+}
+
+func (s *concurrentStore) BatchFetchSchedules(context.Context, [][]byte) ([]gen.ScheduledEmail, error) {
+	return s.rows, nil
+}
+func (s *concurrentStore) MarkProcessing(context.Context, gen.MarkProcessingParams) (int64, error) {
+	return 1, nil
+}
+func (s *concurrentStore) MarkDelivered(context.Context, gen.MarkDeliveredParams) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delivered++
+	return 1, nil
+}
+func (s *concurrentStore) MarkRetrying(context.Context, gen.MarkRetryingParams) (int64, error) {
+	return 1, nil
+}
+func (s *concurrentStore) MarkFailed(context.Context, gen.MarkFailedParams) (int64, error) {
+	return 1, nil
+}
+func (s *concurrentStore) MarkCancelled(context.Context, gen.MarkCancelledParams) (int64, error) {
+	return 1, nil
+}
+func (s *concurrentStore) GetClientForDelivery(context.Context, []byte) (bool, error) {
+	return true, nil
+}
+func (s *concurrentStore) ListClientActiveProviders(context.Context, []byte) ([]gen.ListClientActiveProvidersRow, error) {
+	return nil, nil
+}
+
+// blockingRouter holds each send for a fixed duration and tracks the high-water
+// mark of concurrent sends, which is what the tests actually assert on.
+type blockingRouter struct {
+	hold time.Duration
+
+	mu      sync.Mutex
+	inWork  int
+	maxSeen int
+}
+
+func (r *blockingRouter) Select(string, []cachedProvider, string) Selection {
+	return Selection{Outcome: SelectOK, Vendor: "mock"}
+}
+
+func (r *blockingRouter) Send(context.Context, string, string, []byte, provider.Email) error {
+	r.mu.Lock()
+	r.inWork++
+	if r.inWork > r.maxSeen {
+		r.maxSeen = r.inWork
+	}
+	r.mu.Unlock()
+
+	time.Sleep(r.hold)
+
+	r.mu.Lock()
+	r.inWork--
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *blockingRouter) peak() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.maxSeen
+}
+
+// concurrentIdem is a race-safe idempotency store that always grants the claim.
+type concurrentIdem struct{}
+
+func (concurrentIdem) Acquire(context.Context, string, int) (claimState, error) {
+	return claimFree, nil
+}
+func (concurrentIdem) MarkSent(context.Context, string, int) error { return nil }
+
+func rowsForBench(n int) []gen.ScheduledEmail {
+	out := make([]gen.ScheduledEmail, n)
+	for i := range out {
+		id := make([]byte, 16)
+		id[0], id[1] = byte(i/256), byte(i%256)
+		out[i] = gen.ScheduledEmail{
+			ID:        id,
+			ClientID:  make([]byte, 16),
+			Status:    gen.ScheduleStatusPending,
+			DeliverAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		}
+	}
+	return out
+}
+
+func runConcurrentBatch(t *testing.T, rowCount, concurrency int, hold time.Duration) (*concurrentStore, *blockingRouter) {
+	t.Helper()
+	store := &concurrentStore{rows: rowsForBench(rowCount)}
+	router := &blockingRouter{hold: hold}
+	proc := NewProcessor(zap.NewNop(), store, fakeCache{info: activeClient("mock")},
+		concurrentIdem{}, router, &fakeProducer{},
+		noop.NewTracerProvider().Tracer("test"), 3, concurrency)
+
+	recs := make([]*kgo.Record, 0, rowCount)
+	for _, row := range store.rows {
+		id, err := uuid.FromBytes(row.ID)
+		if err != nil {
+			t.Fatalf("uuid.FromBytes: %v", err)
+		}
+		recs = append(recs, kafka.NewDueRecord(kafka.TopicEmailsDue, row.ID, id.String()))
+	}
+	proc.processBatch(context.Background(), Batch{recs: recs})
+	return store, router
+}
+
+// A send is almost entirely time spent waiting on the provider, so a batch must
+// overlap them. Without concurrency a pod's throughput is pinned at
+// 1/provider_latency no matter how many pods or Kafka partitions exist.
+func TestProcessBatchSendsConcurrently(t *testing.T) {
+	const rows, concurrency = 24, 8
+
+	start := time.Now()
+	store, router := runConcurrentBatch(t, rows, concurrency, 40*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if store.delivered != rows {
+		t.Errorf("delivered %d of %d rows", store.delivered, rows)
+	}
+	if peak := router.peak(); peak < 2 {
+		t.Errorf("peak concurrent sends = %d; the batch was processed serially", peak)
+	}
+	// Serial would be 24*40ms = 960ms; at 8 at a time it is ~3 waves, ~120ms.
+	if serial := rows * 40 * time.Millisecond; elapsed > serial/2 {
+		t.Errorf("batch took %s, more than half the %s a serial batch would take", elapsed, serial)
+	}
+}
+
+// The bound has to hold: it is what keeps a pod's Postgres pool, Redis client
+// and provider from being handed an unbounded number of simultaneous sends.
+func TestProcessBatchRespectsTheConcurrencyLimit(t *testing.T) {
+	const rows, concurrency = 40, 4
+
+	store, router := runConcurrentBatch(t, rows, concurrency, 20*time.Millisecond)
+
+	if store.delivered != rows {
+		t.Errorf("delivered %d of %d rows", store.delivered, rows)
+	}
+	if peak := router.peak(); peak > concurrency {
+		t.Errorf("peak concurrent sends = %d, want at most %d", peak, concurrency)
+	}
+}
+
+// concurrency=1 must still process every row, in the strictly serial shape the
+// rest of the suite asserts against.
+func TestProcessBatchSerialWhenConcurrencyIsOne(t *testing.T) {
+	const rows = 6
+
+	store, router := runConcurrentBatch(t, rows, 1, 5*time.Millisecond)
+
+	if store.delivered != rows {
+		t.Errorf("delivered %d of %d rows", store.delivered, rows)
+	}
+	if peak := router.peak(); peak != 1 {
+		t.Errorf("peak concurrent sends = %d, want exactly 1", peak)
 	}
 }

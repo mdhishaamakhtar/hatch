@@ -10,13 +10,17 @@ import (
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	"github.com/mdhishaamakhtar/hatch/pkg/httpx"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
-// sha256Bytes is the deterministic per-key lookup value stored in
-// clients.api_key_lookup. bcrypt would be non-deterministic and therefore not
-// indexable; sha256 lets us hit a unique index, and we still verify with
-// bcrypt against api_key_hash for credential security.
+// sha256Bytes is the digest stored in clients.api_key_lookup. It is both the
+// index the client row is found by and the credential check itself.
+//
+// A fast digest is the right choice here because an API key is 32 bytes from
+// crypto/rand, not a human-chosen password. A slow, salted hash buys resistance
+// to guessing, which only matters when the secret is drawn from a space small
+// enough to search — an attacker cannot search a uniformly random 256-bit one at
+// any hash speed. This is the same reason API tokens are conventionally stored
+// as a single fast digest while passwords are not.
 func sha256Bytes(s string) []byte {
 	sum := sha256.Sum256([]byte(s))
 	return sum[:]
@@ -32,6 +36,8 @@ func ClientAuth(q *gen.Queries, lg *zap.Logger) func(http.Handler) http.Handler 
 				writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "missing_bearer")
 				return
 			}
+			// Finding the row is the authentication: only a caller holding the
+			// key can produce a digest that matches the stored one.
 			row, err := q.GetClientByAPIKeyLookup(r.Context(), sha256Bytes(tok))
 			if err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
@@ -40,12 +46,6 @@ func ClientAuth(q *gen.Queries, lg *zap.Logger) func(http.Handler) http.Handler 
 				}
 				lg.Error("client auth db lookup failed", zap.Error(err))
 				writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
-				return
-			}
-			if err := bcrypt.CompareHashAndPassword([]byte(row.ApiKeyHash), []byte(tok)); err != nil {
-				// bcrypt mismatch with the lookup-row means the sha256 collided
-				// against a different key (astronomically rare). Treat as 401.
-				writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "bad_credentials")
 				return
 			}
 			clientID, err := db.BytesToUUID(row.ID)

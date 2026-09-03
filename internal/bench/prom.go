@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -82,17 +83,26 @@ func (p *promClient) scalar(ctx context.Context, expr string) (v float64, ok boo
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		// Prometheus renders a missing quantile as NaN, which is "no data",
-		// not a malformed response.
+		return 0, false, nil
+	}
+	// Prometheus renders a quantile with no observations as the literal "NaN",
+	// which ParseFloat accepts — it is a valid float, just not a number we can
+	// report. Treat it (and any infinity) as "no data" rather than letting it
+	// reach a JSON encoder, which cannot represent either.
+	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0, false, nil
 	}
 	return f, true, nil
 }
 
-// Quantiles are the three e2e latency percentiles the SLA is stated in.
+// Quantiles are lateness percentiles in seconds: how far past deliver_at a send
+// actually went out. Present is false when the histogram had no samples in the
+// window, which is a different thing from a measured zero.
 type Quantiles struct {
-	P50, P95, P99 float64
-	Present       bool
+	P50     float64 `json:"p50"`
+	P95     float64 `json:"p95"`
+	P99     float64 `json:"p99"`
+	Present bool    `json:"present"`
 }
 
 // e2eQuantiles reads deliver_at → delivered latency from the delivery worker's

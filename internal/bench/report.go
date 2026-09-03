@@ -2,22 +2,10 @@ package bench
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
-
-// SLA is the latency contract the e2e scenario is judged against, stated as
-// deliver_at → delivered.
-var SLA = struct{ P50, P95, P99 time.Duration }{
-	P50: 500 * time.Millisecond,
-	P95: 2 * time.Second,
-	P99: 30 * time.Second,
-}
 
 // Result is one scenario's full record: what was run, what happened, and enough
 // environment detail to make the numbers reproducible.
@@ -38,7 +26,7 @@ type Result struct {
 
 	E2E      *Quantiles         `json:"e2e_latency_seconds,omitempty"`
 	Metrics  map[string]float64 `json:"metrics,omitempty"`
-	Verdict  []Verdict          `json:"verdict,omitempty"`
+	Checks   []Check            `json:"integrity_checks,omitempty"`
 	Notes    []string           `json:"notes,omitempty"`
 	Warnings []string           `json:"warnings,omitempty"`
 
@@ -53,12 +41,17 @@ type drainSummary struct {
 	WorkerWindow    string  `json:"worker_window"`
 }
 
-// Verdict is one SLA line.
-type Verdict struct {
-	Name   string `json:"name"`
-	Target string `json:"target"`
-	Actual string `json:"actual"`
-	Pass   bool   `json:"pass"`
+// Check is one integrity assertion about a run. These are deliberately not
+// latency targets: a number this project "should" hit would be invented, and a
+// benchmark that grades itself against an invented number measures nothing.
+// What a check asserts instead is that the run was valid — every schedule
+// reached a terminal state, nothing was stranded — so the latency and
+// throughput figures beside it can be read at face value.
+type Check struct {
+	Name     string `json:"name"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
+	Pass     bool   `json:"pass"`
 }
 
 func newResult(scenario string, r *Runner) *Result {
@@ -66,8 +59,8 @@ func newResult(scenario string, r *Runner) *Result {
 		Scenario:  scenario,
 		Label:     r.Opts.Label,
 		StartedAt: time.Now(),
-		GitCommit: gitCommit(),
-		Replicas:  replicaCounts(),
+		GitCommit: r.cfg.GitCommit,
+		Replicas:  r.cfg.ReplicaCounts(),
 		ClientID:  r.client.ID,
 		Metrics:   map[string]float64{},
 	}
@@ -138,13 +131,20 @@ func (res *Result) awaitDrain(ctx context.Context, r *Runner, expect int) error 
 				summary.WorkerWindow, spread))
 		}
 	}
+	if r.obs.peakConns > 0 {
+		res.Metrics["postgres_connections_peak"] = float64(r.obs.peakConns)
+		res.Metrics["postgres_connections_max"] = float64(r.obs.maxConns)
+	}
 	res.Drain = summary
 	return nil
 }
 
 // collectDeliveryMetrics reads the delivery-side numbers out of Prometheus.
 func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error {
-	window := res.window + 30*time.Second // cover the scrape that closed the run
+	// The query runs MetricsSettle after the run ended, and Prometheus looks
+	// back from now — so the window must span the run plus that wait, or the
+	// earliest part of the run falls outside it.
+	window := res.window + r.cfg.MetricsSettle + 30*time.Second
 
 	q, err := r.prom.e2eQuantiles(ctx, window)
 	if err != nil {
@@ -157,11 +157,17 @@ func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error 
 			"no e2e latency observations in the window — the histogram was not scraped or nothing was delivered")
 	}
 
+	// The scheduler's produce count is recorded on every delivery run on
+	// purpose. A stage-ceiling run puts every schedule in one wheel slot, so the
+	// scheduler has to push them all on a single tick — if it cannot, the
+	// observed "delivery" rate is really the scheduler's, and the only way to
+	// notice is to have its numbers side by side.
 	for name, metric := range map[string]string{
-		"sends_total":     "hatch_delivery_sends_total",
-		"retries_total":   "hatch_delivery_retries_total",
-		"failed_total":    "hatch_delivery_failed_total",
-		"idempotency_ops": "hatch_delivery_idempotency_total",
+		"scheduler_produced_total": "hatch_scheduler_kafka_produce_duration_seconds_count",
+		"sends_total":              "hatch_delivery_sends_total",
+		"retries_total":            "hatch_delivery_retries_total",
+		"failed_total":             "hatch_delivery_failed_total",
+		"idempotency_ops":          "hatch_delivery_idempotency_total",
 	} {
 		if v, ok, err := r.prom.counterIncrease(ctx, metric, window); err == nil && ok {
 			res.Metrics[name] = v
@@ -172,6 +178,9 @@ func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error 
 	}
 	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_delivery_batch_duration_seconds", 0.95, window); err == nil && ok {
 		res.Metrics["batch_duration_p95_seconds"] = v
+	}
+	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_scheduler_kafka_produce_duration_seconds", 0.95, window); err == nil && ok {
+		res.Metrics["scheduler_produce_p95_seconds"] = v
 	}
 	return nil
 }
@@ -205,7 +214,7 @@ func (res *Result) checkLoadHealth() {
 // worth having next to the client-side numbers: a gap between them is queueing
 // the handler's histogram cannot see.
 func (res *Result) collectAPIMetrics(ctx context.Context, r *Runner) error {
-	window := res.window + 30*time.Second
+	window := res.window + r.cfg.MetricsSettle + 30*time.Second
 	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_api_request_duration_seconds", 0.95, window); err == nil && ok {
 		res.Metrics["api_request_p95_seconds"] = v
 	}
@@ -218,72 +227,34 @@ func (res *Result) collectAPIMetrics(ctx context.Context, r *Runner) error {
 	return nil
 }
 
-// judgeSLA turns the measured quantiles into pass/fail lines.
-func (res *Result) judgeSLA() {
-	if res.E2E == nil {
-		res.Verdict = append(res.Verdict, Verdict{
-			Name: "e2e latency", Target: "measured", Actual: "no data", Pass: false,
-		})
-		return
-	}
-	for _, c := range []struct {
-		name   string
-		target time.Duration
-		actual float64
-	}{
-		{"e2e p50", SLA.P50, res.E2E.P50},
-		{"e2e p95", SLA.P95, res.E2E.P95},
-		{"e2e p99", SLA.P99, res.E2E.P99},
-	} {
-		actual := time.Duration(c.actual * float64(time.Second))
-		res.Verdict = append(res.Verdict, Verdict{
-			Name:   c.name,
-			Target: "≤ " + c.target.String(),
-			Actual: actual.Round(time.Millisecond).String(),
-			Pass:   actual <= c.target,
-		})
-	}
+// checkIntegrity records whether the run itself was sound. A failing check
+// invalidates the run's numbers; it does not mean the system underperformed.
+func (res *Result) checkIntegrity() {
 	if res.Counts != nil {
-		res.Verdict = append(res.Verdict, Verdict{
-			Name:   "no stranded rows",
-			Target: "0 in flight",
-			Actual: fmt.Sprintf("%d", res.Counts.InFlight()),
-			Pass:   res.Counts.InFlight() == 0,
+		res.Checks = append(res.Checks, Check{
+			Name:     "no stranded rows",
+			Expected: "0 in flight",
+			Actual:   fmt.Sprintf("%d", res.Counts.InFlight()),
+			Pass:     res.Counts.InFlight() == 0,
 		})
-	}
-}
-
-// Passed reports whether every verdict line passed.
-func (res *Result) Passed() bool {
-	for _, v := range res.Verdict {
-		if !v.Pass {
-			return false
+		if res.Load != nil {
+			accounted := res.Counts.Total() == res.Load.Created
+			res.Checks = append(res.Checks, Check{
+				Name:     "every schedule accounted for",
+				Expected: fmt.Sprintf("%d rows", res.Load.Created),
+				Actual:   fmt.Sprintf("%d rows", res.Counts.Total()),
+				Pass:     accounted,
+			})
 		}
 	}
-	return true
-}
-
-// Write renders the result as markdown and json under dir, and returns the
-// markdown path.
-func (res *Result) Write(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	if res.E2E != nil && !res.E2E.Present {
+		res.Checks = append(res.Checks, Check{
+			Name:     "lateness histogram populated",
+			Expected: "present",
+			Actual:   "no data",
+			Pass:     false,
+		})
 	}
-	stamp := res.StartedAt.UTC().Format("20060102-150405")
-	base := filepath.Join(dir, fmt.Sprintf("%s-%s", res.Scenario, stamp))
-
-	raw, err := json.MarshalIndent(res, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(base+".json", raw, 0o644); err != nil {
-		return "", err
-	}
-	md := base + ".md"
-	if err := os.WriteFile(md, []byte(res.Markdown()), 0o644); err != nil {
-		return "", err
-	}
-	return md, nil
 }
 
 // Markdown renders the human-readable report.
@@ -358,16 +329,16 @@ func (res *Result) Markdown() string {
 		}
 	}
 
-	if len(res.Verdict) > 0 {
-		p("\n## Verdict\n")
-		p("| Check | Target | Actual | |")
+	if len(res.Checks) > 0 {
+		p("\n## Run integrity\n")
+		p("| Check | Expected | Actual | |")
 		p("|---|---|---|---|")
-		for _, v := range res.Verdict {
+		for _, v := range res.Checks {
 			mark := "FAIL"
 			if v.Pass {
 				mark = "PASS"
 			}
-			p("| %s | %s | %s | %s |", v.Name, v.Target, v.Actual, mark)
+			p("| %s | %s | %s | %s |", v.Name, v.Expected, v.Actual, mark)
 		}
 	}
 
@@ -396,39 +367,6 @@ func sortedKeys(m map[string]float64) []string {
 			if out[j] < out[i] {
 				out[i], out[j] = out[j], out[i]
 			}
-		}
-	}
-	return out
-}
-
-// gitCommit records which build produced the numbers. Unknown is not fatal —
-// a benchmark run outside a checkout is still a valid run.
-func gitCommit() string {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// replicaCounts reads the deployed replica counts, which are the single most
-// important piece of context for a throughput number.
-func replicaCounts() map[string]int {
-	out := map[string]int{}
-	for _, kind := range []struct{ res, name string }{
-		{"deployment", "api"},
-		{"statefulset", "scheduler"},
-		{"deployment", "delivery-worker"},
-		{"deployment", "retry-consumer"},
-	} {
-		raw, err := exec.Command("kubectl", "-n", "hatch", "get", kind.res, kind.name,
-			"-o", "jsonpath={.status.readyReplicas}").Output()
-		if err != nil {
-			continue
-		}
-		var n int
-		if _, err := fmt.Sscanf(strings.TrimSpace(string(raw)), "%d", &n); err == nil {
-			out[kind.name] = n
 		}
 	}
 	return out

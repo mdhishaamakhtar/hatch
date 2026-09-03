@@ -12,14 +12,14 @@ import (
 // rate-limited or errors out still "sends" at the target rate — only counting
 // 2xx responses keeps the throughput number honest.
 type LoadResult struct {
-	Attempted   int
-	Created     int
-	RateLimited int
-	Errors      int
-	OtherStatus map[int]int
-	Duration    time.Duration
-	AchievedRPS float64
-	Latency     LatencySummary
+	Attempted   int            `json:"attempted"`
+	Created     int            `json:"created"`
+	RateLimited int            `json:"rate_limited"`
+	Errors      int            `json:"transport_errors"`
+	OtherStatus map[int]int    `json:"other_status,omitempty"`
+	Duration    time.Duration  `json:"duration_ns"`
+	AchievedRPS float64        `json:"achieved_rps"`
+	Latency     LatencySummary `json:"latency"`
 }
 
 // LatencySummary is the client-observed request latency. This is deliberately
@@ -27,15 +27,19 @@ type LoadResult struct {
 // two disagree, the gap is queueing outside the handler, which a server-side
 // metric cannot see.
 type LatencySummary struct {
-	P50, P95, P99, Max time.Duration
+	P50 time.Duration `json:"p50_ns"`
+	P95 time.Duration `json:"p95_ns"`
+	P99 time.Duration `json:"p99_ns"`
+	Max time.Duration `json:"max_ns"`
 }
 
 // loadSpec describes one load phase.
 type loadSpec struct {
 	// Count is how many schedules to create.
 	Count int
-	// Workers is the concurrency. The API is CPU-bound on bcrypt, so a handful
-	// of workers is enough to saturate it; more just queues.
+	// Workers is the concurrency offered to the API. Past the point where the
+	// server saturates, more workers only add queueing — throughput flattens
+	// while latency climbs, so sweeping this is how the ceiling is confirmed.
 	Workers int
 	// TargetRPS caps the offered rate. Zero means unthrottled — send as fast as
 	// the workers can, which is how a ceiling is found.
@@ -50,11 +54,11 @@ type loadSpec struct {
 	// the load began.
 	//
 	// A fixed anchor silently breaks whenever the load phase runs long: the
-	// anchor keeps approaching while requests are still going out, and the tail
-	// of the run lands inside API_MIN_SCHEDULE_HORIZON and is rejected 400. That
-	// is exactly what happens at BCRYPT_COST=12, where 200 creates take ~2
-	// minutes. Ceiling runs still want the fixed anchor (one shared wheel slot);
-	// anything that models real arrivals wants this.
+	// anchor keeps approaching while requests are still going out, so the tail of
+	// the run lands inside API_MIN_SCHEDULE_HORIZON and is rejected 400. Any run
+	// whose load phase approaches the schedule lead hits this. Ceiling runs still
+	// want the fixed anchor (one shared wheel slot); anything modelling real
+	// arrivals wants this.
 	Relative bool
 	Lead     time.Duration
 	// SpreadAcross distributes deliver_at over this span, round-robin by second,

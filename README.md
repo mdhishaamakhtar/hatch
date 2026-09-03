@@ -78,6 +78,24 @@ headless service, so each pod has a stable per-pod DNS name
 (`scheduler-0.scheduler.hatch.svc.cluster.local:9022`, …) — that is how
 `make verify` reaches each shard's admin API without a port-forward.
 
+## Benchmarks
+
+```sh
+make bench-micro     # in-process micro-benchmarks, no cluster, seconds
+make bench-all       # full reference suite against the deployed stack (~50 min)
+```
+
+`bench-all` runs every scenario, scales the delivery workers between points, and
+writes [benchmarks/reference.md](benchmarks/reference.md) — every number in it is
+produced by the harness, none typed by hand. It runs as an in-cluster Job reading
+over ClusterDNS, so nothing depends on a port-forward surviving the run.
+
+To iterate on one scenario: `make bench SCENARIO=delivery COUNT=8000`. Watch a
+run live at <http://localhost:3000/d/hatch-benchmark>.
+
+What the numbers mean, and what bounds each stage, is in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 ## Documentation
 
 | Doc | Contents |
@@ -86,4 +104,4 @@ headless service, so each pod has a stable per-pod DNS name
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Lifecycle + common commands, image flow, env split, `make verify` |
 | [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics/logs/traces stack, the Grafana dashboards, the alert list, enabling alert email |
 | [docs/API.md](docs/API.md) | Endpoints, `deliver_at` timestamp format, link to the Swagger UI |
-| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Measured throughput and latency per pipeline stage, what bounds each one, and how to reproduce |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | What the system sustains at each scaling, what bounds each stage, and how to run the suite yourself |

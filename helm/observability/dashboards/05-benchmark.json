@@ -7,10 +7,10 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
-  "refresh": "10s",
+  "version": 2,
+  "refresh": "30s",
   "time": {
-    "from": "now-30m",
+    "from": "now-1h",
     "to": "now"
   },
   "templating": {
@@ -28,7 +28,7 @@
   "panels": [
     {
       "type": "row",
-      "title": "SLA \u2014 end-to-end latency (deliver_at \u2192 delivered)",
+      "title": "Lateness \u2014 deliver_at to delivered",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -40,8 +40,8 @@
     },
     {
       "type": "stat",
-      "title": "E2E p50",
-      "description": "SLA target: 500ms. Red once breached.",
+      "title": "Lateness p50 (peak)",
+      "description": "How long after its deliver_at the email actually went out. The wheel has one-second slots, so ~0-1s of this is scheduling resolution; the rest is queueing plus the provider call.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -56,18 +56,15 @@
         "defaults": {
           "unit": "s",
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "text"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 0.5
               }
             ]
           }
@@ -76,22 +73,24 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "max"
           ]
         },
-        "textMode": "auto"
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "none"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[1m])))"
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "E2E p95",
-      "description": "SLA target: 2s.",
+      "title": "Lateness p95 (peak)",
+      "description": "How long after its deliver_at the email actually went out. The wheel has one-second slots, so ~0-1s of this is scheduling resolution; the rest is queueing plus the provider call.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -106,18 +105,15 @@
         "defaults": {
           "unit": "s",
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "text"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 2
               }
             ]
           }
@@ -126,22 +122,24 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "max"
           ]
         },
-        "textMode": "auto"
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "none"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[1m])))"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "E2E p99",
-      "description": "SLA target: 30s.",
+      "title": "Lateness p99 (peak)",
+      "description": "How long after its deliver_at the email actually went out. The wheel has one-second slots, so ~0-1s of this is scheduling resolution; the rest is queueing plus the provider call.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -156,18 +154,15 @@
         "defaults": {
           "unit": "s",
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "text"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 30
               }
             ]
           }
@@ -176,22 +171,24 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "max"
           ]
         },
-        "textMode": "auto"
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "none"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[1m])))"
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Delivered / sec",
-      "description": "Successful provider sends per second.",
+      "title": "Peak delivered/sec",
+      "description": "Highest sustained send rate in the window.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -206,67 +203,61 @@
         "defaults": {
           "unit": "reqps",
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "text"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 1
         }
       },
       "options": {
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "max"
           ]
         },
-        "textMode": "auto"
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "none"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(hatch_delivery_sends_total{status=\"success\"}[1m]))"
+          "expr": "sum(rate(hatch_delivery_sends_total{status=\"success\"}[$__rate_interval]))"
         }
       ]
     },
     {
-      "type": "row",
-      "title": "Pipeline funnel \u2014 where the work is (and where it piles up)",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 5
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
       "type": "timeseries",
-      "title": "Ingest vs fire vs deliver",
-      "description": "The three stages on one axis. They are independent capacities, so a gap that opens and stays open is backpressure: work entered faster than the next stage drained it.",
+      "title": "Lateness over time",
+      "description": "A burst run puts every schedule in one slot, so lateness climbs as the queue drains and then collapses \u2014 that sawtooth is the expected shape, not a fault.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 9,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 6
+        "y": 5
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "s",
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -290,17 +281,125 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(hatch_api_requests_total{endpoint=\"POST /v1/schedules\"}[1m]))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "heatmap",
+      "title": "Lateness distribution",
+      "description": "Where the mass actually sits. A single bright band means the histogram buckets cannot resolve this range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (le) (rate(hatch_delivery_e2e_latency_seconds_bucket[$__rate_interval]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Pipeline funnel \u2014 where work enters and where it piles up",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Ingest vs fire vs deliver",
+      "description": "Three independent capacities on one axis. A gap that opens and stays open is backpressure: work entered faster than the next stage drained it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(hatch_api_requests_total{endpoint=\"POST /v1/schedules\"}[$__rate_interval]))",
           "legendFormat": "1 \u00b7 ingest (API creates/sec)"
         },
         {
           "refId": "B",
-          "expr": "sum(rate(hatch_scheduler_kafka_produce_duration_seconds_count[1m]))",
+          "expr": "sum(rate(hatch_scheduler_kafka_produce_duration_seconds_count[$__rate_interval]))",
           "legendFormat": "2 \u00b7 fire (scheduler \u2192 Kafka/sec)"
         },
         {
           "refId": "C",
-          "expr": "sum(rate(hatch_delivery_sends_total[1m]))",
+          "expr": "sum(rate(hatch_delivery_sends_total[$__rate_interval]))",
           "legendFormat": "3 \u00b7 deliver (provider sends/sec)"
         }
       ]
@@ -312,7 +411,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 24
       },
       "collapsed": false,
       "panels": []
@@ -320,16 +419,16 @@
     {
       "type": "timeseries",
       "title": "Schedule creates by status",
-      "description": "4xx here during load is usually rate limiting or a deliver_at outside the horizon.",
+      "description": "4xx during load is usually rate limiting or a deliver_at outside the horizon.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 16
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -337,7 +436,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -361,7 +462,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status_code) (rate(hatch_api_requests_total{endpoint=\"POST /v1/schedules\"}[1m]))",
+          "expr": "sum by (status_code) (rate(hatch_api_requests_total{endpoint=\"POST /v1/schedules\"}[$__rate_interval]))",
           "legendFormat": "{{status_code}}"
         }
       ]
@@ -369,16 +470,16 @@
     {
       "type": "timeseries",
       "title": "API request latency",
-      "description": "Dominated by the bcrypt compare in ClientAuth, which runs uncached on every request. Latency rising while throughput stays flat means requests are queueing for CPU.",
+      "description": "Latency climbing while throughput stays flat means requests are queueing for CPU.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 16
+        "w": 8,
+        "x": 8,
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -386,7 +487,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -410,122 +513,24 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[1m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[$__rate_interval])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[1m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[$__rate_interval])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[1m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(hatch_api_request_duration_seconds_bucket{endpoint=\"POST /v1/schedules\"}[$__rate_interval])))",
           "legendFormat": "p99"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Validation failures by reason",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 23
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (reason) (rate(hatch_api_validation_failures_total[1m]))",
-          "legendFormat": "{{reason}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Rate limited (429/sec)",
-      "description": "Per-client limiter. Non-zero means max_rps is the binding constraint, not the server.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 23
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(rate(hatch_api_rate_limited_total[1m]))",
-          "legendFormat": "rate limited"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Idempotent replays",
+      "title": "Rejections",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -535,7 +540,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 23
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -543,7 +548,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -567,319 +574,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(hatch_api_idempotency_hits_total[1m]))",
-          "legendFormat": "replays"
-        }
-      ]
-    },
-    {
-      "type": "row",
-      "title": "Stage 3 \u2014 Delivery saturation",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "type": "timeseries",
-      "title": "Batch processing duration p95",
-      "description": "One batch is processed sequentially, so this tracks batch size x provider latency.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 31
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_delivery_batch_duration_seconds_bucket[1m])))",
-          "legendFormat": "p95"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Provider send duration",
-      "description": "The pacing term: per-pod throughput is roughly 1/this.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 31
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le, provider) (rate(hatch_delivery_provider_send_duration_seconds_bucket[1m])))",
-          "legendFormat": "p50 {{provider}}"
+          "expr": "sum(rate(hatch_api_rate_limited_total[$__rate_interval]))",
+          "legendFormat": "rate limited"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(hatch_delivery_provider_send_duration_seconds_bucket[1m])))",
-          "legendFormat": "p95 {{provider}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Leaky-bucket tokens",
-      "description": "Sitting at capacity means the rate limiter never engaged and is not what is capping throughput.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 31
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "hatch_delivery_leaky_bucket_tokens",
-          "legendFormat": "{{provider}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Retries by tier",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 38
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (tier) (rate(hatch_delivery_retries_total[1m]))",
-          "legendFormat": "{{tier}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Terminal failures by reason",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 38
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (reason) (rate(hatch_delivery_failed_total[1m]))",
-          "legendFormat": "{{reason}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Idempotency outcomes",
-      "description": "duplicate_sent / duplicate_in_flight are the at-least-once guard doing its job.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 38
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (result) (rate(hatch_delivery_idempotency_total[1m]))",
-          "legendFormat": "{{result}}"
+          "expr": "sum by (reason) (rate(hatch_api_validation_failures_total[$__rate_interval]))",
+          "legendFormat": "invalid: {{reason}}"
         }
       ]
     },
@@ -890,7 +591,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 32
       },
       "collapsed": false,
       "panels": []
@@ -898,16 +599,16 @@
     {
       "type": "timeseries",
       "title": "Wheel ids loaded per pod",
-      "description": "Drops to zero as slots fire.",
+      "description": "Climbs on a poll, falls to zero as slots fire.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 46
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -915,7 +616,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -946,7 +649,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Kafka produce latency p95 per pod",
+      "title": "Kafka produce rate per pod",
       "description": "Each id is produced with a synchronous ProduceSync, so this bounds how fast one slot can drain.",
       "datasource": {
         "type": "prometheus",
@@ -954,17 +657,19 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 46
+        "w": 8,
+        "x": 8,
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "reqps",
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
-            "showPoints": "never",
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
@@ -988,8 +693,341 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, pod_index) (rate(hatch_scheduler_kafka_produce_duration_seconds_bucket[1m])))",
+          "expr": "sum by (pod_index) (rate(hatch_scheduler_kafka_produce_duration_seconds_count[$__rate_interval]))",
           "legendFormat": "pod {{pod_index}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka produce latency p95 per pod",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, pod_index) (rate(hatch_scheduler_kafka_produce_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "pod {{pod_index}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Stage 3 \u2014 Delivery",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch processing duration p95",
+      "description": "Batch size divided by how many sends run at once, times provider latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hatch_delivery_batch_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider send duration",
+      "description": "Buckets step .1 -> .25 -> .5, so a mock send at 150-199ms lands in one bucket and this reads as a constant. Treat it as a presence check, not a measurement.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, provider) (rate(hatch_delivery_provider_send_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{provider}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(hatch_delivery_provider_send_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{provider}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Leaky-bucket tokens",
+      "description": "Sitting at capacity means the configured rate limiter never engaged.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "hatch_delivery_leaky_bucket_tokens",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outcomes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(hatch_delivery_sends_total[$__rate_interval]))",
+          "legendFormat": "send: {{status}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (tier) (rate(hatch_delivery_retries_total[$__rate_interval]))",
+          "legendFormat": "retry: {{tier}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (reason) (rate(hatch_delivery_failed_total[$__rate_interval]))",
+          "legendFormat": "failed: {{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Idempotency outcomes",
+      "description": "duplicate_sent / duplicate_in_flight are the at-least-once guard doing its job.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(hatch_delivery_idempotency_total[$__rate_interval]))",
+          "legendFormat": "{{result}}"
         }
       ]
     }

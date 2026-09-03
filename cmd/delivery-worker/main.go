@@ -90,7 +90,7 @@ func run(lg *zap.Logger) error {
 		delivery.NewIdempotency(rc, cfg.IdempotencyTTL),
 		router,
 		hkafka.NewRecordProducer(prodCl),
-		tr, cfg.MaxRetries,
+		tr, cfg.MaxRetries, cfg.SendConcurrency,
 	)
 
 	// Two cancellation domains. SIGTERM cancels ctx, which stops polling for new

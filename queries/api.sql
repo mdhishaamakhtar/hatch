@@ -35,8 +35,8 @@ WHERE id = $1
 RETURNING id, status, updated_at;
 
 -- name: CreateClient :one
-INSERT INTO clients (id, name, api_key_lookup, api_key_hash, max_rps)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO clients (id, name, api_key_lookup, max_rps)
+VALUES ($1, $2, $3, $4)
 RETURNING id, name, max_rps, is_active, created_at;
 
 -- name: SoftDeleteClient :exec
@@ -45,7 +45,7 @@ SET is_active = false
 WHERE id = $1;
 
 -- name: GetClientByAPIKeyLookup :one
-SELECT id, name, max_rps, is_active, api_key_hash
+SELECT id, name, max_rps, is_active
 FROM clients
 WHERE api_key_lookup = $1
   AND is_active = true

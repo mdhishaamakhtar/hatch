@@ -40,8 +40,8 @@ func (q *Queries) CancelSchedule(ctx context.Context, arg CancelScheduleParams) 
 }
 
 const createClient = `-- name: CreateClient :one
-INSERT INTO clients (id, name, api_key_lookup, api_key_hash, max_rps)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO clients (id, name, api_key_lookup, max_rps)
+VALUES ($1, $2, $3, $4)
 RETURNING id, name, max_rps, is_active, created_at
 `
 
@@ -49,7 +49,6 @@ type CreateClientParams struct {
 	ID           []byte `db:"id" json:"id"`
 	Name         string `db:"name" json:"name"`
 	ApiKeyLookup []byte `db:"api_key_lookup" json:"api_key_lookup"`
-	ApiKeyHash   string `db:"api_key_hash" json:"api_key_hash"`
 	MaxRps       int32  `db:"max_rps" json:"max_rps"`
 }
 
@@ -66,7 +65,6 @@ func (q *Queries) CreateClient(ctx context.Context, arg CreateClientParams) (Cre
 		arg.ID,
 		arg.Name,
 		arg.ApiKeyLookup,
-		arg.ApiKeyHash,
 		arg.MaxRps,
 	)
 	var i CreateClientRow
@@ -156,7 +154,7 @@ func (q *Queries) CreateScheduleIdempotency(ctx context.Context, arg CreateSched
 }
 
 const getClientByAPIKeyLookup = `-- name: GetClientByAPIKeyLookup :one
-SELECT id, name, max_rps, is_active, api_key_hash
+SELECT id, name, max_rps, is_active
 FROM clients
 WHERE api_key_lookup = $1
   AND is_active = true
@@ -164,11 +162,10 @@ LIMIT 1
 `
 
 type GetClientByAPIKeyLookupRow struct {
-	ID         []byte `db:"id" json:"id"`
-	Name       string `db:"name" json:"name"`
-	MaxRps     int32  `db:"max_rps" json:"max_rps"`
-	IsActive   bool   `db:"is_active" json:"is_active"`
-	ApiKeyHash string `db:"api_key_hash" json:"api_key_hash"`
+	ID       []byte `db:"id" json:"id"`
+	Name     string `db:"name" json:"name"`
+	MaxRps   int32  `db:"max_rps" json:"max_rps"`
+	IsActive bool   `db:"is_active" json:"is_active"`
 }
 
 func (q *Queries) GetClientByAPIKeyLookup(ctx context.Context, apiKeyLookup []byte) (GetClientByAPIKeyLookupRow, error) {
@@ -179,7 +176,6 @@ func (q *Queries) GetClientByAPIKeyLookup(ctx context.Context, apiKeyLookup []by
 		&i.Name,
 		&i.MaxRps,
 		&i.IsActive,
-		&i.ApiKeyHash,
 	)
 	return i, err
 }
