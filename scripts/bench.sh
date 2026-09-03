@@ -10,7 +10,9 @@
 #   scripts/bench.sh one <scenario> [count] [workers] [spread] [label]
 #   scripts/bench.sh all
 #
-# Results land in benchmarks/results/. `all` writes the committed reference set.
+# `one` drops a single JSON in benchmarks/results/ (gitignored). `all` runs the
+# full sweep and writes benchmarks/reference.{md,json}, the committed artifact
+# that docs/BENCHMARKS.md interprets.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -152,7 +154,8 @@ cmd_one() {
   local scenario="${1:-e2e}" count="${2:-400}" workers="${3:-32}" spread="${4:-0s}" label="${5:-manual}"
   build_image
   mkdir -p "$RESULTS_DIR"
-  local out="$RESULTS_DIR/$scenario-$(date -u +%Y%m%d-%H%M%S).json"
+  mkdir -p "$RESULTS_DIR/results"
+  local out="$RESULTS_DIR/results/$scenario-$(date -u +%Y%m%d-%H%M%S).json"
   run_point "$scenario" "$count" "$workers" "$spread" "$label" > "$out" || exit 1
   echo
   echo "result: $out"

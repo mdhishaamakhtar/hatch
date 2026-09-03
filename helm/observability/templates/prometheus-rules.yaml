@@ -28,7 +28,7 @@ spec:
             severity: critical
           annotations:
             summary: "Hatch e2e delivery latency p99 > 30s"
-            description: "{{`p99 deliver_at→delivered latency is {{ $value | humanizeDuration }} (SLA breach).`}}"
+            description: "{{`p99 deliver_at→delivered latency is {{ $value | humanizeDuration }}. The 30s threshold is an operator-chosen alarm point, not a contract: past roughly this, a backlog is no longer draining on its own. Check delivery worker replicas, send concurrency, and the provider circuit breaker.`}}"
 
         - alert: HatchHighE2ELatencyWarning
           expr: histogram_quantile(0.95, sum(rate(hatch_delivery_e2e_latency_seconds_bucket[5m])) by (le)) > 10
@@ -37,7 +37,7 @@ spec:
             severity: warning
           annotations:
             summary: "Hatch e2e delivery latency p95 > 10s"
-            description: "{{`p95 deliver_at→delivered latency is {{ $value | humanizeDuration }} (early warning before SLA breach).`}}"
+            description: "{{`p95 deliver_at→delivered latency is {{ $value | humanizeDuration }}. Early warning: sends are falling behind deliver_at faster than the workers are catching up. See docs/BENCHMARKS.md for what each stage is bound by.`}}"
 
         - alert: HatchCircuitBreakerOpen
           expr: max by (provider) (hatch_delivery_circuit_breaker_state) == 2

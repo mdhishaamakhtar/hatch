@@ -54,7 +54,7 @@ BUGS.md
 tracer_walkthrough.md
 # Ad-hoc single-scenario runs (`make bench SCENARIO=...`). Only the reference
 # set written by `make bench-all` is committed.
-benchmarks/*-*.json
+benchmarks/results/
 
 # Benchmark image tag, written by `make build-bench`.
 .bench-image-tag

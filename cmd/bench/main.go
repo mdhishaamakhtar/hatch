@@ -7,7 +7,7 @@
 // markers, so the host orchestrator can collect it from `kubectl logs` without
 // parsing prose.
 //
-//	go run ./benchmarks/cmd/bench      # honours the same env vars locally
+//	go run ./cmd/bench      # honours the same env vars locally
 package main
 
 import (
