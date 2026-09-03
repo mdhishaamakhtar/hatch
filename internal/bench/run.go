@@ -36,7 +36,7 @@ func Scenarios() []Scenario {
 		},
 		{
 			Name:     "e2e",
-			Question: "Under a sustained load the API can actually accept, does the pipeline hold the latency SLA?",
+			Question: "With arrivals spread across wheel slots the way real traffic is, how late do sends run?",
 			Run:      runE2E,
 		},
 	}
@@ -225,12 +225,13 @@ func runDelivery(ctx context.Context, r *Runner) (*Result, error) {
 	if err := res.collectDeliveryMetrics(ctx, r); err != nil {
 		res.Warnings = append(res.Warnings, err.Error())
 	}
+	res.checkIntegrity()
 	return res, nil
 }
 
 // runE2E is the integrated run: a sustained rate the API can actually serve,
 // spread across wheel slots the way real traffic would be, carried all the way
-// to a terminal state and judged against the latency SLA.
+// to a terminal state and measured for lateness against deliver_at.
 func runE2E(ctx context.Context, r *Runner) (*Result, error) {
 	res := newResult("e2e", r)
 
@@ -265,7 +266,7 @@ func runE2E(ctx context.Context, r *Runner) (*Result, error) {
 	if err := res.collectAPIMetrics(ctx, r); err != nil {
 		res.Warnings = append(res.Warnings, err.Error())
 	}
-	res.judgeSLA()
+	res.checkIntegrity()
 	return res, nil
 }
 

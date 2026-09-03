@@ -95,10 +95,14 @@ func (p *promClient) scalar(ctx context.Context, expr string) (v float64, ok boo
 	return f, true, nil
 }
 
-// Quantiles are the three e2e latency percentiles the SLA is stated in.
+// Quantiles are lateness percentiles in seconds: how far past deliver_at a send
+// actually went out. Present is false when the histogram had no samples in the
+// window, which is a different thing from a measured zero.
 type Quantiles struct {
-	P50, P95, P99 float64
-	Present       bool
+	P50     float64 `json:"p50"`
+	P95     float64 `json:"p95"`
+	P99     float64 `json:"p99"`
+	Present bool    `json:"present"`
 }
 
 // e2eQuantiles reads deliver_at → delivered latency from the delivery worker's

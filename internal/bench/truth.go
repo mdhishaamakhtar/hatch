@@ -15,12 +15,12 @@ import (
 // metric, so it cannot be wrong because of a missed scrape, a counter reset, or
 // an exporter that was never deployed.
 type StatusCounts struct {
-	Pending    int
-	Processing int
-	Retrying   int
-	Delivered  int
-	Failed     int
-	Cancelled  int
+	Pending    int `json:"pending"`
+	Processing int `json:"processing"`
+	Retrying   int `json:"retrying"`
+	Delivered  int `json:"delivered"`
+	Failed     int `json:"failed"`
+	Cancelled  int `json:"cancelled"`
 }
 
 // Total is every row the benchmark created.

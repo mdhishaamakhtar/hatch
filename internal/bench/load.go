@@ -12,14 +12,14 @@ import (
 // rate-limited or errors out still "sends" at the target rate — only counting
 // 2xx responses keeps the throughput number honest.
 type LoadResult struct {
-	Attempted   int
-	Created     int
-	RateLimited int
-	Errors      int
-	OtherStatus map[int]int
-	Duration    time.Duration
-	AchievedRPS float64
-	Latency     LatencySummary
+	Attempted   int            `json:"attempted"`
+	Created     int            `json:"created"`
+	RateLimited int            `json:"rate_limited"`
+	Errors      int            `json:"transport_errors"`
+	OtherStatus map[int]int    `json:"other_status,omitempty"`
+	Duration    time.Duration  `json:"duration_ns"`
+	AchievedRPS float64        `json:"achieved_rps"`
+	Latency     LatencySummary `json:"latency"`
 }
 
 // LatencySummary is the client-observed request latency. This is deliberately
@@ -27,7 +27,10 @@ type LoadResult struct {
 // two disagree, the gap is queueing outside the handler, which a server-side
 // metric cannot see.
 type LatencySummary struct {
-	P50, P95, P99, Max time.Duration
+	P50 time.Duration `json:"p50_ns"`
+	P95 time.Duration `json:"p95_ns"`
+	P99 time.Duration `json:"p99_ns"`
+	Max time.Duration `json:"max_ns"`
 }
 
 // loadSpec describes one load phase.
