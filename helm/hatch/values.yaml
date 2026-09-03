@@ -1,5 +1,5 @@
 # Default values for the Hatch chart. Each Hatch service has its own `enabled`
-# toggle so individual phases can opt in/out independently.
+# toggle so a service can be deployed or skipped independently.
 
 api:
   enabled: true
@@ -33,7 +33,7 @@ deliveryWorker:
     # be exercised end to end. Empty disables it; it never affects other traffic.
     failRecipient: "fail@mock.test"
 
-# Phase 4 retry consumers: one Deployment running a drain goroutine per tier.
+# Retry consumers: one Deployment running a drain goroutine per tier.
 # Stateless (Kafka only). Drain intervals default to the production 1m/5m/30m in
 # code (internal/retry/config.go); the values below override them to a few
 # seconds so `make verify` and demos on the dev cluster don't wait minutes for a
@@ -50,7 +50,7 @@ retryConsumer:
     tier5min: 4s
     tier30min: 8s
 
-# Phase 5 reconciliation cron: a Deployment running a periodic sweep that
+# Reconciliation cron: a Deployment running a periodic sweep that
 # recovers schedule rows stranded by a crash and re-enqueues them onto
 # emails.due. The acceptance verifier drives recovery in-process, so the dev
 # interval is long (the cron stays dormant during `make verify`); its run-on-boot
@@ -63,7 +63,7 @@ reconciliationCron:
   adminPort: 9025
   interval: 1h
 
-# Phase 5 partition archival cron: a Deployment that detaches, exports (gzip
+# Partition archival cron: a Deployment that detaches, exports (gzip
 # CSV), and drops fully-past, fully-terminal scheduled_emails partitions. The
 # verifier drives archival in-process over isolated test partitions, so the dev
 # interval is long; its run-on-boot sweep emits the active-partition and last-run
@@ -97,7 +97,7 @@ kafka:
   topicsJob:
     enabled: true
   # Topics provisioned by the post-install/post-upgrade Job. The delivery worker
-  # produces to the retry tiers on transient failure; the Phase 4 retry consumers
+  # produces to the retry tiers on transient failure; the retry consumers
   # drain them.
   topics:
     - name: emails.due

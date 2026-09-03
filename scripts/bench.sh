@@ -61,6 +61,38 @@ replica_summary() {
   echo "${out}scheduler=${s:-0}"
 }
 
+# wait_for_job — polls until the Job reaches a terminal state. Short, retryable
+# API calls rather than one long-lived stream: on a loaded machine the control
+# plane can briefly refuse connections, and a dropped `logs -f` used to lose the
+# whole point even though the Job itself had succeeded.
+wait_for_job() {
+  local deadline=$((SECONDS + ${BENCH_POINT_TIMEOUT:-1800}))
+  while (( SECONDS < deadline )); do
+    local succeeded failed
+    succeeded=$(kubectl -n "$NS" get job hatch-bench -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+    failed=$(kubectl -n "$NS" get job hatch-bench -o jsonpath='{.status.failed}' 2>/dev/null || true)
+    [[ "$succeeded" == "1" ]] && return 0
+    [[ -n "$failed" && "$failed" != "0" ]] && return 1
+    sleep 5
+  done
+  echo "  !! point timed out after ${BENCH_POINT_TIMEOUT:-1800}s" >&2
+  return 1
+}
+
+# fetch_logs — retrieves the finished pod's logs, retrying transient API errors.
+# The pod lingers (ttlSecondsAfterFinished), so this is safe to retry.
+fetch_logs() {
+  for _ in 1 2 3 4 5; do
+    local out
+    if out=$(kubectl -n "$NS" logs job/hatch-bench --tail=-1 2>/dev/null) && [[ -n "$out" ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
 # run_point <scenario> <count> <workers> <spread> <label> -> JSON on stdout
 run_point() {
   local scenario="$1" count="$2" workers="$3" spread="$4" label="$5"
@@ -68,6 +100,12 @@ run_point() {
   sched_replicas=$(kubectl -n "$NS" get statefulset scheduler -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 2)
 
   kubectl -n "$NS" delete job hatch-bench --ignore-not-found >/dev/null 2>&1
+  # A finished Job's pod is deleted with it; wait so the next logs call cannot
+  # pick up the previous point's output.
+  for _ in $(seq 1 30); do
+    kubectl -n "$NS" get pod -l app.kubernetes.io/component=bench --no-headers 2>/dev/null | grep -q . || break
+    sleep 1
+  done
 
   BENCH_IMAGE="$BENCH_IMAGE" \
   BENCH_SCENARIO="$scenario" BENCH_COUNT="$count" BENCH_WORKERS="$workers" \
@@ -78,21 +116,18 @@ run_point() {
   BENCH_REPLICAS="$(replica_summary)" \
     envsubst < "$ROOT/scripts/bench-job.yaml" | kubectl apply -f - >/dev/null
 
-  # Wait for the pod to leave Pending before attaching, or `logs -f` errors out.
-  for _ in $(seq 1 180); do
-    local phase
-    phase=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=bench \
-              -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
-    case "$phase" in Running|Succeeded|Failed) break ;; esac
-    sleep 1
-  done
+  # Follow along for visibility only. Losing this stream no longer costs the
+  # result — it is re-fetched from the finished pod below.
+  ( kubectl -n "$NS" logs -f job/hatch-bench 2>/dev/null | sed 's/^/    /' >&2 ) || true
 
-  local logs
-  logs=$(kubectl -n "$NS" logs -f job/hatch-bench 2>/dev/null || true)
+  if ! wait_for_job; then
+    echo "  !! Job did not succeed for $scenario/$label" >&2
+    fetch_logs | tail -20 >&2
+    return 1
+  fi
 
-  # The human report goes to stderr inside the pod and is interleaved here; the
-  # JSON is delimited so it can be lifted out without parsing prose.
-  local json
+  local logs json
+  logs=$(fetch_logs) || { echo "  !! could not read logs for $scenario/$label" >&2; return 1; }
   json=$(printf '%s\n' "$logs" | awk "/$JSON_BEGIN/{f=1;next} /$JSON_END/{f=0} f")
   if [[ -z "$json" ]]; then
     echo "  !! no result JSON from $scenario/$label — pod log follows" >&2
@@ -134,7 +169,10 @@ cmd_all() {
   emit() { n=$((n+1)); cp "$tmp/point.json" "$tmp/$(printf '%02d' "$n").json"; }
   point() { # <scenario> <count> <workers> <spread> <label>
     log "$1 — $5"
-    run_point "$1" "$2" "$3" "$4" "$5" > "$tmp/point.json" && emit
+    if run_point "$1" "$2" "$3" "$4" "$5" > "$tmp/point.json"; then emit; return; fi
+    note "retrying once"
+    if run_point "$1" "$2" "$3" "$4" "$5" > "$tmp/point.json"; then emit; return; fi
+    note "SKIPPED after two attempts: $1 / $5"
   }
 
   log "Hatch benchmark suite — roughly 50 minutes"

@@ -134,6 +134,10 @@ func (res *Result) awaitDrain(ctx context.Context, r *Runner, expect int) error 
 				summary.WorkerWindow, spread))
 		}
 	}
+	if r.obs.peakConns > 0 {
+		res.Metrics["postgres_connections_peak"] = float64(r.obs.peakConns)
+		res.Metrics["postgres_connections_max"] = float64(r.obs.maxConns)
+	}
 	res.Drain = summary
 	return nil
 }

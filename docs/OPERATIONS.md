@@ -66,8 +66,9 @@ floating `:dev` alias.
 `make verify` is a single cumulative acceptance audit: a host prelude
 (build/vet/test/sqlc + pod status) then an in-cluster Job covering migrations →
 API golden path → scheduler → Kafka → delivery → retry → reconciliation →
-partition archival → observability round-trips. New phases append checks to
-`internal/verify` rather than adding per-phase scripts.
+partition archival → observability round-trips. New work appends checks to
+`internal/verify` rather than adding a script of its own, so `make verify` stays
+the single answer to "is this deployment good?".
 
 > The verify run performs a **live Resend send**, so it needs
 > `VERIFY_RESEND_API_KEY` and a verified sender domain to pass.

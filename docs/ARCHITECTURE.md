@@ -7,15 +7,24 @@ state), Kafka (work hand-off), Redis (client cache + idempotency), and bbolt
 [OPERATIONS.md](OPERATIONS.md) for how they are built and deployed.
 
 ```
-cmd/         service entrypoints (api, scheduler, delivery-worker, verify, …)
-internal/    service-specific business logic (incl. verify = in-cluster acceptance auditor)
+cmd/         every binary in the module
+               services  api, scheduler, delivery-worker, retry-consumer,
+                         reconciliation-cron, partition-archival
+               tooling   verify (acceptance audit), bench + benchreport
+                         (benchmarks), tinkgen (keyset generator)
+internal/    the logic behind each of those, one package per binary
 pkg/         shared packages (logger, tracer, metrics, config, db, redis, kafka, wheelstore, provider, crypto)
 migrations/  golang-migrate SQL files
 queries/     sqlc query files
 gen/         generated Go from sqlc
 helm/        helm charts (hatch = data infra + services, observability = monitoring stack)
-scripts/     port-forward, inject-secrets, verify (+ verify-job.yaml manifest)
+scripts/     inject-secrets, sync-migrations, port-forward, verify + bench (with their Job manifests)
+benchmarks/  the committed reference results, written by `make bench-all`
 ```
+
+`verify` and `bench` are both one-shot in-cluster Jobs and share a shape:
+`cmd/X` + `internal/X` + `Dockerfile.X` + `scripts/X-job.yaml` + a make target.
+Each reaches its dependencies over ClusterDNS, so neither needs a port-forward.
 
 ## Scheduler service
 
