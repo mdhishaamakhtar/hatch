@@ -159,6 +159,87 @@ set rather than reported as throughput.
 > **To raise it:** more cores. Then `max_connections`, or a pgBouncer in front.
 > On real hardware neither of these is where the interesting limit lives.
 
+## Tuning the sweep for your machine
+
+The sweep stops at 4 replicas × concurrency 16 because that is what a 10-core
+laptop carries. That number is **hardcoded, not detected** — on a bigger machine
+it will stop well short of your real ceiling, and on a smaller one it may still
+choke. Both caps live in `cmd_all` in [`scripts/bench.sh`](../scripts/bench.sh),
+in the two delivery loops.
+
+The quantity to size is **in-flight sends** — `replicas × DELIVERY_SEND_CONCURRENCY`
+— because that, not either factor alone, is what consumes the two scarce
+resources.
+
+### The database bound
+
+Each in-flight send holds roughly one Postgres connection. Measure your own
+budget rather than trusting that ratio:
+
+```sh
+kubectl -n hatch exec postgres-0 -- psql -U hatch -c "SHOW max_connections"
+kubectl -n hatch exec postgres-0 -- psql -U hatch -c "SELECT count(*) FROM pg_stat_activity"
+```
+
+Run the second one with the stack idle to get your baseline. Then:
+
+```
+max_in_flight  ≈  (max_connections − idle_baseline) × 0.7
+```
+
+The 0.7 is headroom for the reconciliation and archival crons, the retry
+consumer, and the benchmark's own observer connection — all of which want a
+connection at the same moment the workers are busiest. On this host that is
+`(100 − 22) × 0.7 ≈ 54`, and the sweep's 64 sits slightly above it, which is
+consistent with the second delivery point reaching only two thirds of its
+predicted throughput.
+
+Every run reports `postgres_connections_peak` and `postgres_connections_max` in
+its metrics, so you can check a point after the fact rather than guessing.
+
+### The CPU bound
+
+Harder, because the symptom appears only after you have caused it. Pick a
+starting cap from cores — roughly **8 in-flight sends per physical core** worked
+here — then run the sweep and watch for these, in this order:
+
+```sh
+kubectl -n hatch get pods                          # RESTARTS climbing
+kubectl -n hatch get events | grep -i unhealthy    # probe timeouts
+```
+
+The signature is unmistakable once you know it: `Liveness probe failed: context
+deadline exceeded`, restart reasons of `Completed` rather than `OOMKilled`, and
+trivial commands like `redis-cli ping` timing out after one second. When a
+one-second ping cannot complete, you are out of CPU, and kubelet is about to
+start killing healthy pods. If the Kubernetes API server stops answering, you
+are well past the edge — back the cap off and re-run; it recovers as soon as
+load stops.
+
+Note that a multi-node Docker Desktop or kind cluster reports each node's CPU
+count as the **whole host's**. Three nodes on a 10-core laptop advertise 30
+cores. Kubernetes will schedule against the phantom ones.
+
+### Raising the ceilings rather than working around them
+
+| Bound | Move it by |
+|---|---|
+| Postgres connections | raise `max_connections`, or put pgBouncer in front so connections stop tracking in-flight sends |
+| Host CPU | more cores, or more nodes that are actually separate machines |
+| Cascading restarts under load | size liveness probe timeouts for a *loaded* system, not an idle one |
+| Provider latency | the model divides by it — a faster provider raises throughput at the same concurrency |
+
+That last row is worth stating plainly: these numbers are all against
+`MockProvider` at 150 ms + jitter, set by `MOCK_PROVIDER_LATENCY_MS`. Change it
+and every delivery figure moves proportionally, because
+`emails/sec ≈ in_flight ÷ provider_latency` is the whole model. Benchmarking
+against a real provider measures that provider's rate limits instead, which is a
+different and equally worthwhile question.
+
+On a real cluster with a connection pooler and dedicated nodes, none of these
+caps is likely to be the interesting limit. They are here because a laptop makes
+them the interesting limit.
+
 ## The window question, answered
 
 Using the measured 122 emails/sec on this laptop:
