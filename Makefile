@@ -286,3 +286,39 @@ test: ## Run all unit tests under -race
 .PHONY: verify
 verify: ## Run the full cumulative acceptance audit (host prelude + in-cluster Job)
 	@./scripts/verify.sh
+
+# ─── Benchmarks ────────────────────────────────────────────────────────────
+# Two tiers. bench-micro runs in-process with no cluster and establishes the
+# per-operation costs; bench drives the deployed stack and measures what each
+# pipeline stage sustains. See benchmarks/README.md.
+
+.PHONY: bench-micro
+bench-micro: ## Tier 0: in-process Go micro-benchmarks (no cluster needed)
+	go test ./internal/... ./pkg/... -run '^$$' -bench . -benchmem
+
+.PHONY: bench-pf
+bench-pf: ## Port-forwards the benchmark harness reads through (Postgres, Prometheus, scheduler pods)
+	@pkill -f "kubectl port-forward" || true
+	@sleep 1; mkdir -p /tmp/hatch-pf
+	@kubectl -n $(NS_HATCH) port-forward svc/postgres 5432:5432 >/tmp/hatch-pf/postgres.log 2>&1 &
+	@kubectl -n $(NS_OBS) port-forward svc/observability-kps-prometheus 9090:9090 >/tmp/hatch-pf/prometheus.log 2>&1 &
+	@kubectl -n $(NS_HATCH) port-forward pod/scheduler-0 9122:9022 >/tmp/hatch-pf/scheduler-0.log 2>&1 &
+	@kubectl -n $(NS_HATCH) port-forward pod/scheduler-1 9123:9022 >/tmp/hatch-pf/scheduler-1.log 2>&1 &
+	@sleep 3
+	@echo "Postgres localhost:5432 | Prometheus localhost:9090 | scheduler-0 :9122 | scheduler-1 :9123"
+	@echo "Grafana  http://localhost:3000/d/hatch-benchmark  (admin/admin)"
+
+.PHONY: bench
+bench: ## Tier 1/2: run a scenario, e.g. make bench SCENARIO=e2e COUNT=400
+	@test -n "$(SCENARIO)" || (echo "SCENARIO required, e.g. make bench SCENARIO=ingest" && exit 1)
+	set -a; . ./.env; set +a; \
+	  go run ./benchmarks/cmd/bench \
+	    --scenario $(SCENARIO) \
+	    --count $${COUNT:-200} \
+	    --workers $${WORKERS:-8} \
+	    --spread $${SPREAD:-0s} \
+	    $${LABEL:+--label "$${LABEL}"}
+
+.PHONY: bench-list
+bench-list: ## List the benchmark scenarios
+	@go run ./benchmarks/cmd/bench --list

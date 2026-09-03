@@ -86,3 +86,4 @@ headless service, so each pod has a stable per-pod DNS name
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Lifecycle + common commands, image flow, env split, `make verify` |
 | [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics/logs/traces stack, the Grafana dashboards, the alert list, enabling alert email |
 | [docs/API.md](docs/API.md) | Endpoints, `deliver_at` timestamp format, link to the Swagger UI |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Measured throughput and latency per pipeline stage, what bounds each one, and how to reproduce |
