@@ -11,7 +11,6 @@ type Config struct {
 	OTLPEndpoint     string `env:"OTLP_ENDPOINT"`
 	AdminAPIKey      string `env:"ADMIN_API_KEY,required"`
 	ProviderCredKey  string `env:"PROVIDER_CRED_KEY,required"`
-	BcryptCost       int    `env:"BCRYPT_COST"        envDefault:"12"`
 	MaxBodyBytes     int64  `env:"API_MAX_BODY_BYTES" envDefault:"65536"`
 	APIEnableSwagger bool   `env:"API_ENABLE_SWAGGER" envDefault:"true"`
 

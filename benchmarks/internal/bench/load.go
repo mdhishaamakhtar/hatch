@@ -34,8 +34,9 @@ type LatencySummary struct {
 type loadSpec struct {
 	// Count is how many schedules to create.
 	Count int
-	// Workers is the concurrency. The API is CPU-bound on bcrypt, so a handful
-	// of workers is enough to saturate it; more just queues.
+	// Workers is the concurrency offered to the API. Past the point where the
+	// server saturates, more workers only add queueing — throughput flattens
+	// while latency climbs, so sweeping this is how the ceiling is confirmed.
 	Workers int
 	// TargetRPS caps the offered rate. Zero means unthrottled — send as fast as
 	// the workers can, which is how a ceiling is found.
@@ -50,11 +51,11 @@ type loadSpec struct {
 	// the load began.
 	//
 	// A fixed anchor silently breaks whenever the load phase runs long: the
-	// anchor keeps approaching while requests are still going out, and the tail
-	// of the run lands inside API_MIN_SCHEDULE_HORIZON and is rejected 400. That
-	// is exactly what happens at BCRYPT_COST=12, where 200 creates take ~2
-	// minutes. Ceiling runs still want the fixed anchor (one shared wheel slot);
-	// anything that models real arrivals wants this.
+	// anchor keeps approaching while requests are still going out, so the tail of
+	// the run lands inside API_MIN_SCHEDULE_HORIZON and is rejected 400. Any run
+	// whose load phase approaches the schedule lead hits this. Ceiling runs still
+	// want the fixed anchor (one shared wheel slot); anything modelling real
+	// arrivals wants this.
 	Relative bool
 	Lead     time.Duration
 	// SpreadAcross distributes deliver_at over this span, round-robin by second,

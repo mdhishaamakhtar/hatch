@@ -14,7 +14,7 @@ make bench-micro
 
 Ordinary Go benchmarks, living in the packages they measure. No cluster, no
 setup, a few seconds to run. They cover the operations that turned out to set
-the system's ceilings — the bcrypt compare in `ClientAuth`, the wheel's
+the system's ceilings — the auth digest in `ClientAuth`, the wheel's
 `Append`/`Drain`/`Stats`, `Router.Select`, and `parseBatch`.
 
 ## Tier 1/2 — the deployed stack
@@ -44,9 +44,10 @@ Knobs: `COUNT`, `WORKERS`, `SPREAD`, `LABEL`. Environment overrides are in
 
 **One stage at a time.** The three stages differ by more than an order of
 magnitude, so a single blended "N per second" would only ever report the slowest
-one and teach you nothing about why. Each scenario isolates one stage and
-de-throttles the others — the `delivery` scenario deliberately runs with a lower
-`BCRYPT_COST`, because ingest is not what it is measuring.
+one and teach you nothing about why. Each scenario isolates one stage: the
+`delivery` run, for instance, creates its schedules as fast as the API allows and
+then measures only what the workers did with them, so the ingest rate cannot
+colour the result.
 
 **Postgres is the ground truth.** Terminal-state counts come from the rows
 themselves, never from a metric. A metric can be stale, reset, or never scraped;

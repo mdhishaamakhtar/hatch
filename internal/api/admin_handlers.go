@@ -12,7 +12,6 @@ import (
 	"github.com/mdhishaamakhtar/hatch/gen"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type createClientRequest struct {
@@ -66,13 +65,6 @@ func (s *Server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiKey := base64.RawURLEncoding.EncodeToString(raw)
-	lookup := sha256Bytes(apiKey)
-	hash, err := bcrypt.GenerateFromPassword([]byte(apiKey), s.cfg.BcryptCost)
-	if err != nil {
-		s.lg.Error("bcrypt hash failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "")
-		return
-	}
 	id, err := uuid.NewV7()
 	if err != nil {
 		s.lg.Error("uuidv7 failed", zap.Error(err))
@@ -82,8 +74,7 @@ func (s *Server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 	row, err := s.queries.CreateClient(r.Context(), gen.CreateClientParams{
 		ID:           db.UUIDToBytes(id),
 		Name:         in.Name,
-		ApiKeyLookup: lookup,
-		ApiKeyHash:   string(hash),
+		ApiKeyLookup: sha256Bytes(apiKey),
 		MaxRps:       in.MaxRPS,
 	})
 	if err != nil {
