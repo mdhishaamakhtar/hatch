@@ -1,0 +1,264 @@
+{
+  "generated_at": "2026-09-03T18:15:55.240894Z",
+  "git_commit": "cdce4be",
+  "host": "Apple M1 Pro, 10 cores",
+  "results": [
+    {
+      "scenario": "ingest",
+      "label": "ingest, 8 concurrent clients",
+      "started_at": "2026-09-03T17:51:26.032010125Z",
+      "ended_at": "2026-09-03T17:51:28.96265496Z",
+      "duration": "2.931s",
+      "git_commit": "142407e",
+      "replicas": {
+        "api": 1,
+        "delivery-worker": 1,
+        "retry-consumer": 1,
+        "scheduler": 2
+      },
+      "client_id": "01a06865-a148-7981-bd43-230857a030bb",
+      "load": {
+        "attempted": 5000,
+        "created": 5000,
+        "rate_limited": 0,
+        "transport_errors": 0,
+        "duration_ns": 2930166793,
+        "achieved_rps": 1706.3875039280058,
+        "latency": {
+          "p50_ns": 1387791,
+          "p95_ns": 12363500,
+          "p99_ns": 71460875,
+          "max_ns": 88384166
+        }
+      },
+      "metrics": {
+        "api_rate_limited_total": 0,
+        "api_request_p95_seconds": 0.009957264900584831,
+        "api_requests_total": 8539.242320705345
+      }
+    },
+    {
+      "scenario": "ingest",
+      "label": "ingest, 32 concurrent clients",
+      "started_at": "2026-09-03T17:52:46.229184176Z",
+      "ended_at": "2026-09-03T17:52:49.371649553Z",
+      "duration": "3.142s",
+      "git_commit": "142407e",
+      "replicas": {
+        "api": 1,
+        "delivery-worker": 1,
+        "retry-consumer": 1,
+        "scheduler": 2
+      },
+      "client_id": "01a06866-da8b-7615-bc79-c019e5ada0c4",
+      "load": {
+        "attempted": 5000,
+        "created": 5000,
+        "rate_limited": 0,
+        "transport_errors": 0,
+        "duration_ns": 3142040377,
+        "achieved_rps": 1591.3226439101231,
+        "latency": {
+          "p50_ns": 6816583,
+          "p95_ns": 75646292,
+          "p99_ns": 79881750,
+          "max_ns": 88894708
+        }
+      },
+      "metrics": {
+        "api_rate_limited_total": 0,
+        "api_request_p95_seconds": 0.08682318992654775,
+        "api_requests_total": 8622.672955450742
+      }
+    },
+    {
+      "scenario": "ingest",
+      "label": "ingest, 128 concurrent clients",
+      "started_at": "2026-09-03T17:54:06.579823088Z",
+      "ended_at": "2026-09-03T17:54:09.45266084Z",
+      "duration": "2.873s",
+      "git_commit": "c848947",
+      "replicas": {
+        "api": 1,
+        "delivery-worker": 1,
+        "retry-consumer": 1,
+        "scheduler": 2
+      },
+      "client_id": "01a06868-1470-79b3-8433-260e4d5f4856",
+      "load": {
+        "attempted": 5000,
+        "created": 5000,
+        "rate_limited": 0,
+        "transport_errors": 0,
+        "duration_ns": 2872444626,
+        "achieved_rps": 1740.6775938315338,
+        "latency": {
+          "p50_ns": 89050875,
+          "p95_ns": 98145292,
+          "p99_ns": 100366125,
+          "max_ns": 105938000
+        }
+      },
+      "metrics": {
+        "api_rate_limited_total": 0,
+        "api_request_p95_seconds": 0.09273383371824481,
+        "api_requests_total": 5705.263391815464
+      }
+    },
+    {
+      "scenario": "delivery",
+      "label": "4 replicas, send concurrency 1",
+      "started_at": "2026-09-03T17:55:42.594170091Z",
+      "ended_at": "2026-09-03T17:58:53.225151138Z",
+      "duration": "3m10.631s",
+      "git_commit": "cdce4be",
+      "replicas": {
+        "api": 1,
+        "delivery-worker": 4,
+        "retry-consumer": 1,
+        "scheduler": 2
+      },
+      "client_id": "01a06869-8b7e-7bcb-9d21-e1981359871b",
+      "load": {
+        "attempted": 800,
+        "created": 800,
+        "rate_limited": 0,
+        "transport_errors": 0,
+        "duration_ns": 367988875,
+        "achieved_rps": 2173.9787649830446,
+        "latency": {
+          "p50_ns": 15037250,
+          "p95_ns": 82467833,
+          "p99_ns": 84589750,
+          "max_ns": 86762541
+        }
+      },
+      "drain": {
+        "waited": "3m10.119s",
+        "timed_out": false,
+        "delivered_per_sec": 20.349842278547417,
+        "worker_window": "39.312s"
+      },
+      "final_counts": {
+        "pending": 0,
+        "processing": 0,
+        "retrying": 0,
+        "delivered": 800,
+        "failed": 0,
+        "cancelled": 0
+      },
+      "e2e_latency_seconds": {
+        "p50": 19.099676276702766,
+        "p95": 52.35016622902311,
+        "p99": 58.470033255638455,
+        "present": true
+      },
+      "metrics": {
+        "batch_duration_p95_seconds": 30,
+        "idempotency_ops": 415.7252699083292,
+        "postgres_connections_max": 100,
+        "postgres_connections_peak": 26,
+        "provider_send_p95_seconds": 0.24250000000000002,
+        "scheduler_produce_p95_seconds": 0.0009830636489347021,
+        "scheduler_produced_total": 910.1471014523395,
+        "sends_total": 422.41288727009567
+      },
+      "integrity_checks": [
+        {
+          "name": "no stranded rows",
+          "expected": "0 in flight",
+          "actual": "0",
+          "pass": true
+        },
+        {
+          "name": "every schedule accounted for",
+          "expected": "800 rows",
+          "actual": "800 rows",
+          "pass": true
+        }
+      ],
+      "notes": [
+        "forced an out-of-band poll on 2 scheduler pod(s)",
+        "deliver_at spread: none (all schedules mature in a single wheel slot)"
+      ]
+    },
+    {
+      "scenario": "delivery",
+      "label": "4 replicas, send concurrency 8",
+      "started_at": "2026-09-03T18:00:27.224272792Z",
+      "ended_at": "2026-09-03T18:03:23.286831888Z",
+      "duration": "2m56.061s",
+      "git_commit": "cdce4be",
+      "replicas": {
+        "api": 1,
+        "delivery-worker": 4,
+        "retry-consumer": 1,
+        "scheduler": 2
+      },
+      "client_id": "01a0686d-e349-761d-bc25-abd9ca10efaf",
+      "load": {
+        "attempted": 3000,
+        "created": 3000,
+        "rate_limited": 0,
+        "transport_errors": 0,
+        "duration_ns": 1544602793,
+        "achieved_rps": 1942.24690878181,
+        "latency": {
+          "p50_ns": 11566667,
+          "p95_ns": 83728541,
+          "p99_ns": 86713250,
+          "max_ns": 90532750
+        }
+      },
+      "drain": {
+        "waited": "2m54.252s",
+        "timed_out": false,
+        "delivered_per_sec": 121.96229527510751,
+        "worker_window": "24.598s"
+      },
+      "final_counts": {
+        "pending": 0,
+        "processing": 0,
+        "retrying": 0,
+        "delivered": 3000,
+        "failed": 0,
+        "cancelled": 0
+      },
+      "e2e_latency_seconds": {
+        "p50": 17.702656658584427,
+        "p95": 28.770265550802442,
+        "p99": 29.75405310632697,
+        "present": true
+      },
+      "metrics": {
+        "batch_duration_p95_seconds": 26.52042807437901,
+        "idempotency_ops": 2642.3646207431034,
+        "postgres_connections_max": 100,
+        "postgres_connections_peak": 55,
+        "provider_send_p95_seconds": 0.2425788054589554,
+        "retries_total": 1.481552629385782,
+        "scheduler_produce_p95_seconds": 0.0009641407288598201,
+        "scheduler_produced_total": 3450.0791841240225,
+        "sends_total": 2675.66749521422
+      },
+      "integrity_checks": [
+        {
+          "name": "no stranded rows",
+          "expected": "0 in flight",
+          "actual": "0",
+          "pass": true
+        },
+        {
+          "name": "every schedule accounted for",
+          "expected": "3000 rows",
+          "actual": "3000 rows",
+          "pass": true
+        }
+      ],
+      "notes": [
+        "forced an out-of-band poll on 2 scheduler pod(s)",
+        "deliver_at spread: none (all schedules mature in a single wheel slot)"
+      ]
+    }
+  ]
+}

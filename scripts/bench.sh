@@ -32,7 +32,11 @@ build_image() {
   log "Building the bench image"
   make build-bench >/dev/null 2>&1 || { echo "bench image build failed" >&2; exit 1; }
   BENCH_IMAGE="hatch/bench:$(cat "$ROOT/.bench-image-tag")"
-  note "using $BENCH_IMAGE"
+  # Pinned once, here. Every point in a sweep runs this one image, so stamping
+  # each point with HEAD-at-submission-time would label them with commits the
+  # measured binary predates if anyone commits while a sweep is running.
+  BENCH_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  note "using $BENCH_IMAGE built from $BENCH_COMMIT"
 }
 
 # scale <deployment> <replicas> — waits for the rollout so a measurement never
@@ -114,7 +118,7 @@ run_point() {
   BENCH_SPREAD="$spread" BENCH_LABEL="$label" \
   BENCH_SCHEDULER_REPLICAS="$sched_replicas" \
   BENCH_SCHEDULE_LEAD="${BENCH_SCHEDULE_LEAD:-2m30s}" \
-  BENCH_GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+  BENCH_GIT_COMMIT="$BENCH_COMMIT" \
   BENCH_REPLICAS="$(replica_summary)" \
     envsubst < "$ROOT/scripts/bench-job.yaml" | kubectl apply -f - >/dev/null
 
@@ -193,24 +197,35 @@ cmd_all() {
   done
 
   # --- delivery: capacity vs send concurrency, replicas fixed at 4 ---
-  for spec in "1 800" "8 3000" "32 8000" "64 8000"; do
+  #
+  # Concurrency stops at 16 (4 x 16 = 64 in-flight sends) on purpose. Each
+  # in-flight send holds roughly one Postgres connection, and the server allows
+  # 100 with about 20 already spoken for, so 128 in-flight sends do not fit.
+  # Past that the host runs out of CPU too: kubelet's liveness probes start
+  # timing out, and it restarts healthy pods. What that measures is the laptop,
+  # not Hatch. docs/BENCHMARKS.md has the evidence and how to raise the bound.
+  for spec in "1 800" "4 2000" "8 3000" "16 5000"; do
     set -- $spec
     set_env delivery-worker "DELIVERY_SEND_CONCURRENCY=$1"
     scale delivery-worker 4
     point delivery "$2" 64 0s "4 replicas, send concurrency $1"
   done
 
-  # --- delivery: capacity vs replicas, concurrency fixed at 32 ---
-  set_env delivery-worker "DELIVERY_SEND_CONCURRENCY=32"
-  for spec in "1 3000" "2 5000" "8 8000"; do
+  # --- delivery: capacity vs replicas, concurrency fixed at 8 ---
+  # Same in-flight budget: 4 replicas x 8 is 32 concurrent sends, well inside it.
+  set_env delivery-worker "DELIVERY_SEND_CONCURRENCY=8"
+  for spec in "1 800" "2 1500" "4 3000"; do
     set -- $spec
     scale delivery-worker "$1"
-    point delivery "$2" 64 0s "$1 replicas, send concurrency 32"
+    point delivery "$2" 64 0s "$1 replicas, send concurrency 8"
   done
 
   # --- e2e: punctuality when arrivals are spread, as real traffic would be ---
+  # Every other point packs the whole batch into one wheel slot, which makes
+  # lateness a measure of queue depth. Spreading arrivals over 60s is the
+  # realistic shape, and the only point where lateness means what it sounds like.
   scale delivery-worker 4
-  point e2e 3000 32 60s "arrivals spread over 60s, 4 replicas, concurrency 32"
+  point e2e 3000 32 60s "arrivals spread over 60s, 4 replicas, concurrency 8"
 
   restore_defaults
 
