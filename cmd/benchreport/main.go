@@ -158,6 +158,35 @@ func (r reference) markdown() string {
 	}
 
 	p("")
+	p("## Run integrity")
+	p("")
+	p("Whether each run was *valid* — every schedule reached a terminal state and")
+	p("nothing was left in flight. These are not performance targets. A failure here")
+	p("means the numbers above cannot be read at face value; it does not mean the")
+	p("system was slow.")
+	p("")
+	p("| Run | Check | Expected | Actual | |")
+	p("|---|---|---|---|---|")
+	integrity := 0
+	for _, res := range r.Results {
+		for _, c := range res.Checks {
+			mark := "FAIL"
+			if c.Pass {
+				mark = "ok"
+			} else {
+				integrity++
+			}
+			p("| %s | %s | %s | %s | %s |", res.Label, c.Name, c.Expected, c.Actual, mark)
+		}
+	}
+	p("")
+	if integrity == 0 {
+		p("All checks passed.")
+	} else {
+		p("**%d check(s) failed** — see the affected points below before citing them.", integrity)
+	}
+
+	p("")
 	p("## Every point in full")
 	for _, res := range r.Results {
 		p("")
