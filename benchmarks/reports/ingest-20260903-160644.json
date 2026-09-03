@@ -1,0 +1,30 @@
+{
+  "scenario": "ingest",
+  "label": "no bcrypt, workers=4",
+  "started_at": "2026-09-03T21:36:44.522611+05:30",
+  "ended_at": "2026-09-03T21:36:45.026451+05:30",
+  "duration": "504ms",
+  "git_commit": "a2894c4",
+  "replicas": {
+    "api": 1,
+    "delivery-worker": 1,
+    "retry-consumer": 1,
+    "scheduler": 2
+  },
+  "client_id": "01a06805-c81c-7789-a4e6-0ce1294e8611",
+  "load": {
+    "Attempted": 400,
+    "Created": 400,
+    "RateLimited": 0,
+    "Errors": 0,
+    "OtherStatus": {},
+    "Duration": 294353709,
+    "AchievedRPS": 1358.9093249713392,
+    "Latency": {
+      "P50": 1480000,
+      "P95": 2338833,
+      "P99": 57872833,
+      "Max": 58318750
+    }
+  }
+}

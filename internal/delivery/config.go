@@ -43,6 +43,12 @@ type Config struct {
 
 	MaxRetries int `env:"DELIVERY_MAX_RETRIES" envDefault:"3"`
 
+	// SendConcurrency is how many sends one pod runs at once. A send is almost
+	// all waiting on the provider, so a pod's throughput is about
+	// SendConcurrency / provider_latency — this is the knob that decides it.
+	// Set to 1 to process each batch strictly in order.
+	SendConcurrency int `env:"DELIVERY_SEND_CONCURRENCY" envDefault:"32"`
+
 	// Circuit breaker tuning (per client+vendor).
 	BreakerMinRequests  uint32        `env:"DELIVERY_BREAKER_MIN_REQUESTS"  envDefault:"20"`
 	BreakerFailureRatio float64       `env:"DELIVERY_BREAKER_FAILURE_RATIO" envDefault:"0.5"`

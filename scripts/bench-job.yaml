@@ -1,0 +1,59 @@
+# In-cluster benchmark runner. One Job per sweep point, so a run reaches
+# Postgres, Prometheus, the API and each scheduler pod over ClusterDNS and never
+# depends on a host port-forward — a benchmark lasts tens of minutes and a
+# dropped forward would cost the whole run.
+#
+# Applied by scripts/bench.sh with ${BENCH_*} substituted per point. envFrom
+# pulls ADMIN_API_KEY / DATABASE_URL / KAFKA_BROKERS from the same Secret the
+# services use.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hatch-bench
+  namespace: hatch
+  labels:
+    app.kubernetes.io/part-of: hatch
+    app.kubernetes.io/component: bench
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: hatch
+        app.kubernetes.io/component: bench
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bench
+          image: ${BENCH_IMAGE}
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: hatch-secrets
+          env:
+            - name: BENCH_SCENARIO
+              value: "${BENCH_SCENARIO}"
+            - name: BENCH_COUNT
+              value: "${BENCH_COUNT}"
+            - name: BENCH_WORKERS
+              value: "${BENCH_WORKERS}"
+            - name: BENCH_SPREAD
+              value: "${BENCH_SPREAD}"
+            - name: BENCH_LABEL
+              value: "${BENCH_LABEL}"
+            - name: BENCH_SCHEDULER_REPLICAS
+              value: "${BENCH_SCHEDULER_REPLICAS}"
+            - name: BENCH_SCHEDULE_LEAD
+              value: "${BENCH_SCHEDULE_LEAD}"
+            - name: BENCH_GIT_COMMIT
+              value: "${BENCH_GIT_COMMIT}"
+            - name: BENCH_REPLICAS
+              value: "${BENCH_REPLICAS}"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"

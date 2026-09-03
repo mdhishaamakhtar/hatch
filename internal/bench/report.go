@@ -2,11 +2,7 @@ package bench
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -66,8 +62,8 @@ func newResult(scenario string, r *Runner) *Result {
 		Scenario:  scenario,
 		Label:     r.Opts.Label,
 		StartedAt: time.Now(),
-		GitCommit: gitCommit(),
-		Replicas:  replicaCounts(),
+		GitCommit: r.cfg.GitCommit,
+		Replicas:  r.cfg.ReplicaCounts(),
 		ClientID:  r.client.ID,
 		Metrics:   map[string]float64{},
 	}
@@ -144,7 +140,10 @@ func (res *Result) awaitDrain(ctx context.Context, r *Runner, expect int) error 
 
 // collectDeliveryMetrics reads the delivery-side numbers out of Prometheus.
 func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error {
-	window := res.window + 30*time.Second // cover the scrape that closed the run
+	// The query runs MetricsSettle after the run ended, and Prometheus looks
+	// back from now — so the window must span the run plus that wait, or the
+	// earliest part of the run falls outside it.
+	window := res.window + r.cfg.MetricsSettle + 30*time.Second
 
 	q, err := r.prom.e2eQuantiles(ctx, window)
 	if err != nil {
@@ -157,11 +156,17 @@ func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error 
 			"no e2e latency observations in the window — the histogram was not scraped or nothing was delivered")
 	}
 
+	// The scheduler's produce count is recorded on every delivery run on
+	// purpose. A stage-ceiling run puts every schedule in one wheel slot, so the
+	// scheduler has to push them all on a single tick — if it cannot, the
+	// observed "delivery" rate is really the scheduler's, and the only way to
+	// notice is to have its numbers side by side.
 	for name, metric := range map[string]string{
-		"sends_total":     "hatch_delivery_sends_total",
-		"retries_total":   "hatch_delivery_retries_total",
-		"failed_total":    "hatch_delivery_failed_total",
-		"idempotency_ops": "hatch_delivery_idempotency_total",
+		"scheduler_produced_total": "hatch_scheduler_kafka_produce_duration_seconds_count",
+		"sends_total":              "hatch_delivery_sends_total",
+		"retries_total":            "hatch_delivery_retries_total",
+		"failed_total":             "hatch_delivery_failed_total",
+		"idempotency_ops":          "hatch_delivery_idempotency_total",
 	} {
 		if v, ok, err := r.prom.counterIncrease(ctx, metric, window); err == nil && ok {
 			res.Metrics[name] = v
@@ -172,6 +177,9 @@ func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error 
 	}
 	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_delivery_batch_duration_seconds", 0.95, window); err == nil && ok {
 		res.Metrics["batch_duration_p95_seconds"] = v
+	}
+	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_scheduler_kafka_produce_duration_seconds", 0.95, window); err == nil && ok {
+		res.Metrics["scheduler_produce_p95_seconds"] = v
 	}
 	return nil
 }
@@ -205,7 +213,7 @@ func (res *Result) checkLoadHealth() {
 // worth having next to the client-side numbers: a gap between them is queueing
 // the handler's histogram cannot see.
 func (res *Result) collectAPIMetrics(ctx context.Context, r *Runner) error {
-	window := res.window + 30*time.Second
+	window := res.window + r.cfg.MetricsSettle + 30*time.Second
 	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_api_request_duration_seconds", 0.95, window); err == nil && ok {
 		res.Metrics["api_request_p95_seconds"] = v
 	}
@@ -261,29 +269,6 @@ func (res *Result) Passed() bool {
 		}
 	}
 	return true
-}
-
-// Write renders the result as markdown and json under dir, and returns the
-// markdown path.
-func (res *Result) Write(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	stamp := res.StartedAt.UTC().Format("20060102-150405")
-	base := filepath.Join(dir, fmt.Sprintf("%s-%s", res.Scenario, stamp))
-
-	raw, err := json.MarshalIndent(res, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(base+".json", raw, 0o644); err != nil {
-		return "", err
-	}
-	md := base + ".md"
-	if err := os.WriteFile(md, []byte(res.Markdown()), 0o644); err != nil {
-		return "", err
-	}
-	return md, nil
 }
 
 // Markdown renders the human-readable report.
@@ -396,39 +381,6 @@ func sortedKeys(m map[string]float64) []string {
 			if out[j] < out[i] {
 				out[i], out[j] = out[j], out[i]
 			}
-		}
-	}
-	return out
-}
-
-// gitCommit records which build produced the numbers. Unknown is not fatal —
-// a benchmark run outside a checkout is still a valid run.
-func gitCommit() string {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// replicaCounts reads the deployed replica counts, which are the single most
-// important piece of context for a throughput number.
-func replicaCounts() map[string]int {
-	out := map[string]int{}
-	for _, kind := range []struct{ res, name string }{
-		{"deployment", "api"},
-		{"statefulset", "scheduler"},
-		{"deployment", "delivery-worker"},
-		{"deployment", "retry-consumer"},
-	} {
-		raw, err := exec.Command("kubectl", "-n", "hatch", "get", kind.res, kind.name,
-			"-o", "jsonpath={.status.readyReplicas}").Output()
-		if err != nil {
-			continue
-		}
-		var n int
-		if _, err := fmt.Sscanf(strings.TrimSpace(string(raw)), "%d", &n); err == nil {
-			out[kind.name] = n
 		}
 	}
 	return out

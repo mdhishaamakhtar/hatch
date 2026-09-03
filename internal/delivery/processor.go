@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,10 +54,23 @@ type Processor struct {
 	producer   kafka.Producer
 	tracer     trace.Tracer
 	maxRetries int
+
+	// concurrency bounds the sends in flight within one batch. A send is almost
+	// entirely spent waiting on the provider, so this is what decides a pod's
+	// throughput: roughly concurrency / provider_latency. 1 processes the batch
+	// strictly in order.
+	concurrency int
 }
 
-func NewProcessor(lg *zap.Logger, store Store, cache clientGetter, idem idemStore, router sendRouter, producer kafka.Producer, tracer trace.Tracer, maxRetries int) *Processor {
-	return &Processor{lg: lg, store: store, cache: cache, idem: idem, router: router, producer: producer, tracer: tracer, maxRetries: maxRetries}
+func NewProcessor(lg *zap.Logger, store Store, cache clientGetter, idem idemStore, router sendRouter, producer kafka.Producer, tracer trace.Tracer, maxRetries, concurrency int) *Processor {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	return &Processor{
+		lg: lg, store: store, cache: cache, idem: idem, router: router,
+		producer: producer, tracer: tracer, maxRetries: maxRetries,
+		concurrency: concurrency,
+	}
 }
 
 // Compile-time checks that the concrete deps satisfy the processor's interfaces.
@@ -101,19 +115,56 @@ func (p *Processor) processBatch(ctx context.Context, b Batch) {
 		return
 	}
 
+	// Rows run concurrently up to p.concurrency. They are independent: Kafka
+	// orders only within a partition and messages are keyed by schedule id, so
+	// two different schedules have no ordering relationship, and
+	// BatchFetchSchedules returns each id once even when the batch carried a
+	// duplicate record. Redis SET NX still arbitrates against other pods.
+	//
+	// The whole batch is awaited before returning, so G1 commits offsets only
+	// once every row is done — the at-least-once contract is unchanged.
+	sem := make(chan struct{}, p.concurrency)
+	var wg sync.WaitGroup
+
+	stopped := false
 	for _, row := range rows {
-		// Stop between rows once shutdown starts. Continuing would only burn
-		// failed status writes on a cancelled context; the uncommitted offsets
-		// mean the next consumer picks these rows up cleanly.
+		// Stop launching once shutdown starts. Rows already in flight finish
+		// under the drain budget; the rest are left uncommitted so the next
+		// consumer picks them up cleanly.
+		//
+		// The explicit check has to come first. A select whose ctx.Done() and
+		// semaphore cases are both ready picks between them at random, so on a
+		// cancelled context it would still start roughly half the remaining rows.
 		if ctx.Err() != nil {
-			p.lg.Info("shutdown mid-batch; leaving remaining rows for redelivery")
-			return
+			stopped = true
+			break
 		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			stopped = true
+		}
+		if stopped {
+			break
+		}
+
 		rowCtx := ctx
 		if rec := recByID[uuidString(row.ID)]; rec != nil {
 			rowCtx = kafka.ExtractOtelHeaders(ctx, rec)
 		}
-		p.processOne(rowCtx, row)
+
+		wg.Add(1)
+		go func(ctx context.Context, row gen.ScheduledEmail) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			p.processOne(ctx, row)
+		}(rowCtx, row)
+	}
+
+	wg.Wait()
+	if stopped {
+		p.lg.Info("shutdown mid-batch; leaving remaining rows for redelivery")
+		return
 	}
 	mBatchDuration.Observe(time.Since(start).Seconds())
 }

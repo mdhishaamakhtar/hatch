@@ -69,6 +69,13 @@ build-verify: ## Build the in-cluster verify Docker image with a unique tag
 	  echo $$TAG > .verify-image-tag && \
 	  echo "→ tagged: hatch/verify:$$TAG (also hatch/verify:dev)"
 
+.PHONY: build-bench
+build-bench: ## Build the in-cluster benchmark Docker image with a unique tag
+	@TAG=dev-$$(date +%s); \
+	  docker build -f Dockerfile.bench -t hatch/bench:$$TAG -t hatch/bench:dev . && \
+	  echo $$TAG > .bench-image-tag && \
+	  echo "→ tagged: hatch/bench:$$TAG (also hatch/bench:dev)"
+
 .PHONY: swag-gen
 swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
 	go tool swag init \
@@ -288,37 +295,24 @@ verify: ## Run the full cumulative acceptance audit (host prelude + in-cluster J
 	@./scripts/verify.sh
 
 # ─── Benchmarks ────────────────────────────────────────────────────────────
-# Two tiers. bench-micro runs in-process with no cluster and establishes the
-# per-operation costs; bench drives the deployed stack and measures what each
-# pipeline stage sustains. See benchmarks/README.md.
+# Two tiers. bench-micro runs in-process and needs no cluster; bench/bench-all
+# drive the deployed stack from an in-cluster Job, so no port-forward has to
+# survive an hour-long run. See docs/BENCHMARKS.md.
 
 .PHONY: bench-micro
 bench-micro: ## Tier 0: in-process Go micro-benchmarks (no cluster needed)
 	go test ./internal/... ./pkg/... -run '^$$' -bench . -benchmem
 
-.PHONY: bench-pf
-bench-pf: ## Port-forwards the benchmark harness reads through (Postgres, Prometheus, scheduler pods)
-	@pkill -f "kubectl port-forward" || true
-	@sleep 1; mkdir -p /tmp/hatch-pf
-	@kubectl -n $(NS_HATCH) port-forward svc/postgres 5432:5432 >/tmp/hatch-pf/postgres.log 2>&1 &
-	@kubectl -n $(NS_OBS) port-forward svc/observability-kps-prometheus 9090:9090 >/tmp/hatch-pf/prometheus.log 2>&1 &
-	@kubectl -n $(NS_HATCH) port-forward pod/scheduler-0 9122:9022 >/tmp/hatch-pf/scheduler-0.log 2>&1 &
-	@kubectl -n $(NS_HATCH) port-forward pod/scheduler-1 9123:9022 >/tmp/hatch-pf/scheduler-1.log 2>&1 &
-	@sleep 3
-	@echo "Postgres localhost:5432 | Prometheus localhost:9090 | scheduler-0 :9122 | scheduler-1 :9123"
-	@echo "Grafana  http://localhost:3000/d/hatch-benchmark  (admin/admin)"
-
 .PHONY: bench
-bench: ## Tier 1/2: run a scenario, e.g. make bench SCENARIO=e2e COUNT=400
-	@test -n "$(SCENARIO)" || (echo "SCENARIO required, e.g. make bench SCENARIO=ingest" && exit 1)
-	set -a; . ./.env; set +a; \
-	  go run ./benchmarks/cmd/bench \
-	    --scenario $(SCENARIO) \
-	    --count $${COUNT:-200} \
-	    --workers $${WORKERS:-8} \
-	    --spread $${SPREAD:-0s} \
-	    $${LABEL:+--label "$${LABEL}"}
+bench: ## Run one scenario, e.g. make bench SCENARIO=delivery COUNT=2000
+	@./scripts/bench.sh one $${SCENARIO:-e2e} $${COUNT:-400} $${WORKERS:-32} $${SPREAD:-0s} "$${LABEL:-manual}"
+
+.PHONY: bench-all
+bench-all: ## Run the full reference suite and write benchmarks/ (~45-60 min)
+	@./scripts/bench.sh all
 
 .PHONY: bench-list
 bench-list: ## List the benchmark scenarios
-	@go run ./benchmarks/cmd/bench --list
+	@echo "  ingest     How many schedules per second can the API accept?"
+	@echo "  delivery   How many emails per second can the delivery workers send?"
+	@echo "  e2e        How long after deliver_at does an email actually go out?"

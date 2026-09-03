@@ -62,16 +62,20 @@ type MockConfig struct {
 
 // MockProvider satisfies Provider with env-controlled latency and error
 // distributions. It performs no network I/O.
+//
+// One instance is shared by every concurrent send for a (client, vendor), so it
+// must be safe for concurrent use. It draws from math/rand/v2's top-level
+// functions, which are goroutine-safe; a *rand.Rand of its own would not be, and
+// would race as soon as a worker sends more than one email at a time.
 type MockProvider struct {
 	cfg MockConfig
-	rng *rand.Rand
 }
 
-// NewMockProvider returns a MockProvider seeded for reproducible probability
-// draws within a single process. The seed is intentionally non-cryptographic.
+// NewMockProvider returns a MockProvider. Draws are non-cryptographic and not
+// reproducible — with concurrent sends the interleaving is not repeatable
+// anyway, so a fixed seed would promise something it could not deliver.
 func NewMockProvider(cfg MockConfig) *MockProvider {
-	src := rand.NewPCG(uint64(time.Now().UnixNano()), 0xC0FFEE)
-	return &MockProvider{cfg: cfg, rng: rand.New(src)}
+	return &MockProvider{cfg: cfg}
 }
 
 // Vendor implements Provider.
@@ -81,7 +85,7 @@ func (m *MockProvider) Vendor() string { return "mock" }
 func (m *MockProvider) Send(ctx context.Context, e Email) error {
 	jitter := 0
 	if m.cfg.LatencyJitterMS > 0 {
-		jitter = m.rng.IntN(m.cfg.LatencyJitterMS)
+		jitter = rand.IntN(m.cfg.LatencyJitterMS)
 	}
 	d := time.Duration(m.cfg.LatencyMS+jitter) * time.Millisecond
 	select {
@@ -95,10 +99,10 @@ func (m *MockProvider) Send(ctx context.Context, e Email) error {
 		return ErrTransient
 	}
 
-	if m.cfg.RateLimitRate > 0 && m.rng.Float64() < m.cfg.RateLimitRate {
+	if m.cfg.RateLimitRate > 0 && rand.Float64() < m.cfg.RateLimitRate {
 		return ErrRateLimited
 	}
-	if m.cfg.ErrorRate > 0 && m.rng.Float64() < m.cfg.ErrorRate {
+	if m.cfg.ErrorRate > 0 && rand.Float64() < m.cfg.ErrorRate {
 		return ErrTransient
 	}
 	return nil

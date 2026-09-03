@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,6 +42,21 @@ func Scenarios() []Scenario {
 	}
 }
 
+// ScenarioByName resolves a scenario, listing the valid names when it cannot.
+func ScenarioByName(name string) (Scenario, error) {
+	all := Scenarios()
+	for _, s := range all {
+		if s.Name == name {
+			return s, nil
+		}
+	}
+	names := make([]string, 0, len(all))
+	for _, s := range all {
+		names = append(names, s.Name)
+	}
+	return Scenario{}, fmt.Errorf("unknown scenario %q (have: %s)", name, strings.Join(names, ", "))
+}
+
 // Runner holds everything a scenario needs. One is built per invocation.
 type Runner struct {
 	cfg    Config
@@ -51,7 +67,7 @@ type Runner struct {
 	client benchClient
 	obs    *observer
 
-	// Opts are the CLI knobs a scenario reads.
+	// Opts are the per-run knobs a scenario reads.
 	Opts Options
 }
 
@@ -74,7 +90,7 @@ type Options struct {
 func NewRunner(ctx context.Context, cfg Config, opts Options) (*Runner, error) {
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("postgres (is `make port-forward` running?): %w", err)
+		return nil, fmt.Errorf("postgres: %w", err)
 	}
 
 	api := newAPIClient(cfg.APIBase, 64)
@@ -131,7 +147,7 @@ func (r *Runner) Close(ctx context.Context) {
 // sharded across them — whichever pod owns a given schedule must be the one
 // that loads it.
 func (r *Runner) forceAllPolls(ctx context.Context) error {
-	for _, u := range r.cfg.SchedulerAdminURLs {
+	for _, u := range r.cfg.SchedulerURLs() {
 		if err := forcePoll(ctx, r.http, u, r.cfg.AdminKey); err != nil {
 			return fmt.Errorf("force poll: %w", err)
 		}
@@ -159,6 +175,9 @@ func runIngest(ctx context.Context, r *Runner) (*Result, error) {
 	res.checkLoadHealth()
 	res.finish()
 
+	if err := r.settleMetrics(ctx); err != nil {
+		return nil, err
+	}
 	if err := res.collectAPIMetrics(ctx, r); err != nil {
 		res.Warnings = append(res.Warnings, err.Error())
 	}
@@ -192,7 +211,7 @@ func runDelivery(ctx context.Context, r *Runner) (*Result, error) {
 	if err := r.forceAllPolls(ctx); err != nil {
 		return nil, err
 	}
-	res.Note("forced an out-of-band poll on %d scheduler pod(s)", len(r.cfg.SchedulerAdminURLs))
+	res.Note("forced an out-of-band poll on %d scheduler pod(s)", r.cfg.SchedReplicas)
 	res.Note("deliver_at spread: %s", spreadLabel(r.Opts.Spread))
 
 	if err := res.awaitDrain(ctx, r, load.Created); err != nil {
@@ -200,6 +219,9 @@ func runDelivery(ctx context.Context, r *Runner) (*Result, error) {
 	}
 	res.finish()
 
+	if err := r.settleMetrics(ctx); err != nil {
+		return nil, err
+	}
 	if err := res.collectDeliveryMetrics(ctx, r); err != nil {
 		res.Warnings = append(res.Warnings, err.Error())
 	}
@@ -234,6 +256,9 @@ func runE2E(ctx context.Context, r *Runner) (*Result, error) {
 	}
 	res.finish()
 
+	if err := r.settleMetrics(ctx); err != nil {
+		return nil, err
+	}
 	if err := res.collectDeliveryMetrics(ctx, r); err != nil {
 		res.Warnings = append(res.Warnings, err.Error())
 	}
@@ -279,22 +304,38 @@ func preflight(ctx context.Context, cfg Config, api *apiClient) error {
 	hc := &http.Client{Timeout: 5 * time.Second}
 
 	if resp, err := api.do(ctx, http.MethodGet, "/healthz", "", nil); err != nil || resp.code != http.StatusOK {
-		return fmt.Errorf("scheduler-api not reachable at %s (is the stack up? `make up-all`): %v", cfg.APIBase, err)
+		return fmt.Errorf("scheduler-api not reachable at %s: %v", cfg.APIBase, err)
 	}
-	for _, u := range cfg.SchedulerAdminURLs {
+	for _, u := range cfg.SchedulerURLs() {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"/healthz", nil)
 		if err != nil {
 			return err
 		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			return fmt.Errorf("scheduler admin %s not reachable (run `make bench-pf`; "+
-				"per-pod forwards break whenever the scheduler pods are replaced): %w", u, err)
+			return fmt.Errorf("scheduler admin %s not reachable "+
+				"(is BENCH_SCHEDULER_REPLICAS correct for the deployed StatefulSet?): %w", u, err)
 		}
 		_ = resp.Body.Close()
 	}
 	if _, _, err := newPromClient(cfg.PromURL).scalar(ctx, "up"); err != nil {
-		return fmt.Errorf("prometheus not reachable at %s (run `make bench-pf`): %w", cfg.PromURL, err)
+		return fmt.Errorf("prometheus not reachable at %s: %w", cfg.PromURL, err)
 	}
 	return nil
+}
+
+// settleMetrics waits out the scrape interval so the run's final increments are
+// actually in Prometheus before anything queries for them. Without it a fast
+// scenario finishes inside one scrape window and reports "no data" for work it
+// definitely did.
+func (r *Runner) settleMetrics(ctx context.Context) error {
+	fmt.Printf("  waiting %s for the final Prometheus scrape…\n", r.cfg.MetricsSettle)
+	t := time.NewTimer(r.cfg.MetricsSettle)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
