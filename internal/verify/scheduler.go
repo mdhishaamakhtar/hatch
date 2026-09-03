@@ -39,7 +39,7 @@ func (v *Verifier) checkScheduler(ctx context.Context) {
 // checkTopic asserts emails.due exists with the expected partition count via a
 // Kafka MetadataRequest (no kubectl exec).
 func (v *Verifier) checkTopic(ctx context.Context) {
-	cl, err := kgo.NewClient(kgo.SeedBrokers(v.cfg.Brokers...))
+	cl, err := kgo.NewClient(kgo.SeedBrokers(v.cfg.Brokers()...))
 	if err != nil {
 		v.rep.Failf("kafka metadata client: %v", err)
 		return
@@ -168,7 +168,7 @@ func (v *Verifier) consume(ctx context.Context, expected map[string]bool) {
 		v.rep.Fail("no schedules posted; nothing to consume")
 		return
 	}
-	cl, err := hkafka.NewConsumer(v.cfg.Brokers, v.runID, []string{dueTopic}, v.lg)
+	cl, err := hkafka.NewConsumer(v.cfg.Brokers(), v.runID, []string{dueTopic}, v.lg)
 	if err != nil {
 		v.rep.Failf("kafka consumer: %v", err)
 		return

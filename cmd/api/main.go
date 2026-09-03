@@ -1,5 +1,6 @@
-// scheduler-api — Hatch Phase 1 service. Handles client schedule CRUD and
-// admin client/provider provisioning. See internal/api for handler details.
+// scheduler-api — Hatch's client-facing HTTP API. Handles client schedule
+// CRUD and admin client/provider provisioning. See internal/api for handler
+// details.
 //
 //	@title			Hatch Scheduler API
 //	@version		1.0

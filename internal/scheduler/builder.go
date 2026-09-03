@@ -45,7 +45,13 @@ func (p *Pipeline) appendEntry(ctx context.Context, e Entry) {
 		attribute.String("schedule_id", uuidString(e.ID)),
 	)
 
-	p.wheel.Append(slot, e.ID)
+	// Recovery and the startup poll cover overlapping windows, so the same id
+	// legitimately arrives twice. The wheel absorbs that in memory; persisting
+	// again would leave a second copy in the slot's bbolt value.
+	if !p.wheel.Append(slot, e.ID) {
+		span.SetAttributes(attribute.Bool("duplicate", true))
+		return
+	}
 	if err := p.store.Append(slot.String(), e.ID, e.DeliverAt); err != nil {
 		span.RecordError(err)
 		logger.WithCtx(ctx, p.lg).Error("bbolt append failed",

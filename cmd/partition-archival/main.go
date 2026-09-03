@@ -1,8 +1,8 @@
-// partition-archival — Hatch Phase 5 service. Sweeps the scheduled_emails
-// partitions on an interval and, for each fully-past month whose rows are all
-// terminal, detaches it, exports it to a gzip CSV, and drops it. Runs as a
-// long-lived Deployment (not a CronJob) so Prometheus can scrape its /metrics
-// between sweeps. See internal/archival for the design.
+// partition-archival — Hatch's partition-lifecycle cron. Sweeps the
+// scheduled_emails partitions on an interval and, for each fully-past month
+// whose rows are all terminal, detaches it, exports it to a gzip CSV, and drops
+// it. Runs as a long-lived Deployment (not a CronJob) so Prometheus can scrape
+// its /metrics between sweeps. See internal/archival for the design.
 package main
 
 import (

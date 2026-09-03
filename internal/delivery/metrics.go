@@ -6,8 +6,8 @@ import "github.com/mdhishaamakhtar/hatch/pkg/metrics"
 // Observability doc (hatch_delivery_* in the project's `hatch` namespace).
 //
 // Per-(client,vendor) state (breaker, bucket) is collapsed to a `provider`
-// (vendor) label to keep cardinality bounded; with the small client counts this
-// phase targets, last-writer-wins on these gauges is acceptable.
+// (vendor) label to keep cardinality bounded; at the client counts Hatch
+// targets, last-writer-wins on these gauges is acceptable.
 var (
 	mBatchSize = metrics.NewHistogram(
 		"delivery", "batch_size",

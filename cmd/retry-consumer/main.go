@@ -1,7 +1,7 @@
-// retry-consumer — Hatch Phase 4 service. Runs one drain goroutine per retry
-// tier (emails.retry.1min / 5min / 30min): each drains its topic on a schedule
-// and re-enqueues every schedule_id to emails.due with a fresh OTel context.
-// Stateless — no Postgres or Redis. See internal/retry for the design.
+// retry-consumer — Hatch's retry-tier drainer. Runs one drain goroutine per
+// retry tier (emails.retry.1min / 5min / 30min): each drains its topic on a
+// schedule and re-enqueues every schedule_id to emails.due with a fresh OTel
+// context. Stateless — no Postgres or Redis. See internal/retry for the design.
 package main
 
 import (

@@ -15,14 +15,14 @@ import (
 )
 
 // Retry-tier topics the delivery worker produces to on transient failure and the
-// Phase 4 retry consumers drain.
+// retry consumers drain.
 const (
 	retry1MinTopic  = "emails.retry.1min"
 	retry5MinTopic  = "emails.retry.5min"
 	retry30MinTopic = "emails.retry.30min"
 )
 
-// checkRetry validates the Phase 4 retry consumers two ways:
+// checkRetry validates the retry consumers two ways:
 //   - Part A (isolated): a synthetic schedule_id dropped on each tier topic is
 //     drained and re-enqueued onto emails.due.
 //   - Part B (end-to-end): a real schedule sent to the MockProvider fail sentinel
@@ -30,7 +30,7 @@ const (
 func (v *Verifier) checkRetry(ctx context.Context) {
 	v.rep.Section("Retry — tier drain → emails.due, and full failure cascade")
 
-	producer, err := hkafka.NewProducer(v.cfg.Brokers, v.lg)
+	producer, err := hkafka.NewProducer(v.cfg.Brokers(), v.lg)
 	if err != nil {
 		v.rep.Failf("kafka producer: %v", err)
 		return
@@ -58,7 +58,7 @@ func (v *Verifier) checkRetryDrain(ctx context.Context, producer *kgo.Client) {
 	}
 
 	cl, err := kgo.NewClient(
-		kgo.SeedBrokers(v.cfg.Brokers...),
+		kgo.SeedBrokers(v.cfg.Brokers()...),
 		kgo.ConsumeTopics(dueTopic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 	)

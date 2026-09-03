@@ -113,6 +113,39 @@ func TestBuilderWritesWheelAndStoreTogether(t *testing.T) {
 	}
 }
 
+// Recovery and the startup poll cover overlapping windows, so the builder sees
+// the same id twice on most restarts. The wheel drops the duplicate; the store
+// must not record it either, or the slot's bbolt value grows a copy per poll.
+func TestBuilderDoesNotPersistADuplicateEntry(t *testing.T) {
+	store := newFakeStore()
+	p := testPipeline(Config{}, store, &fakePoller{}, &fakeProducer{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.RunBuilder(ctx)
+
+	deliverAt := time.Date(2030, 1, 1, 12, 3, 7, 0, time.UTC)
+	p.entries <- Entry{ID: id(0xab), DeliverAt: deliverAt}
+	if !eventually(func() bool { return len(store.snapshot()["03:07"]) == 1 }) {
+		t.Fatal("first entry never reached the store")
+	}
+
+	p.entries <- Entry{ID: id(0xab), DeliverAt: deliverAt}
+	// A distinct entry behind the duplicate acts as a barrier: once it lands,
+	// the builder has necessarily finished handling the duplicate ahead of it.
+	p.entries <- Entry{ID: id(0xcd), DeliverAt: deliverAt.Add(time.Minute)}
+	if !eventually(func() bool { return len(store.snapshot()["04:07"]) == 1 }) {
+		t.Fatal("barrier entry never reached the store")
+	}
+
+	if got := store.snapshot()["03:07"]; len(got) != 1 {
+		t.Fatalf("bbolt slot 03:07 holds %d entries, want 1 (duplicate was persisted)", len(got))
+	}
+	if got := p.wheel.Drain(Slot{Min: 3, Sec: 7}); len(got) != 1 {
+		t.Errorf("wheel slot 03:07 holds %d ids, want 1", len(got))
+	}
+}
+
 func TestBuilderDeletesClearedSlots(t *testing.T) {
 	store := newFakeStore()
 	_ = store.Append("05:05", id(1), time.Now())

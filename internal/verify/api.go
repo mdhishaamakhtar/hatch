@@ -11,7 +11,7 @@ import (
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 )
 
-// checkAPIGoldenPath exercises the full Phase 1 lifecycle against the API over
+// checkAPIGoldenPath exercises the full schedule lifecycle against the API over
 // ClusterDNS: client + provider creation (with Tink encryption and cache
 // invalidation proofs), then a single schedule through create → idempotent
 // replay → get → cancel. It leaves the verify client in place; cleanup()

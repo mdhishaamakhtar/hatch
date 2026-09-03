@@ -1,4 +1,4 @@
-// Package scheduler holds the Phase 2 timer-wheel service: a 3-goroutine
+// Package scheduler holds the timer-wheel service: a 3-goroutine
 // pipeline (DB poller → wheel builder + bbolt persistence → 1-second ticker
 // → Kafka produce) that fires `emails.due` messages at the exact second each
 // scheduled email matures. See the LLD §Scheduler for the full design.

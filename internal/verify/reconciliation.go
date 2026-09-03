@@ -69,7 +69,7 @@ func (v *Verifier) checkReconciliation(ctx context.Context) {
 	// Position an at-end consumer on emails.due before the sweep, so we only
 	// observe the fresh re-enqueues (not the topic's history).
 	cl, err := kgo.NewClient(
-		kgo.SeedBrokers(v.cfg.Brokers...),
+		kgo.SeedBrokers(v.cfg.Brokers()...),
 		kgo.ConsumeTopics(dueTopic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 	)
@@ -83,7 +83,7 @@ func (v *Verifier) checkReconciliation(ctx context.Context) {
 	posCancel()
 
 	// Run the real reconciliation sweep in-process against the cluster DB + Kafka.
-	producer, err := hkafka.NewProducer(v.cfg.Brokers, v.lg)
+	producer, err := hkafka.NewProducer(v.cfg.Brokers(), v.lg)
 	if err != nil {
 		v.rep.Failf("recon kafka producer: %v", err)
 		return

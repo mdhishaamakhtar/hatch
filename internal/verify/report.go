@@ -4,9 +4,11 @@
 // headless DNS, and the Prometheus/Loki/Tempo query APIs — so verification
 // never depends on host port-forwards.
 //
-// The suite is cumulative, not per-phase: it asserts everything built so far
-// (foundation → API golden path → scheduler → Kafka → observability). New
-// phases append checks here rather than spawning a new script.
+// There is one suite, and it is cumulative: it asserts the whole system in
+// dependency order (foundation → API golden path → scheduler → delivery →
+// retry → reconciliation → archival → observability). New work appends checks
+// here rather than spawning a script of its own, so `make verify` is always the
+// single answer to "is this deployment good?".
 package verify
 
 import "fmt"

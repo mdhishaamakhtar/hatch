@@ -1,4 +1,4 @@
-// delivery-worker — Hatch Phase 3 service. Consumes `emails.due` from Kafka,
+// delivery-worker — Hatch's email sender. Consumes `emails.due` from Kafka,
 // hydrates each schedule from Postgres, routes the send through a provider
 // (mock or Resend) behind a per-(client,vendor) circuit breaker + leaky bucket,
 // and drives the scheduled_emails status machine to a terminal state. On
@@ -71,7 +71,7 @@ func run(lg *zap.Logger) error {
 	}
 	defer prodCl.Close()
 
-	// Vendor factories: only the providers implemented this phase. Resend uses
+	// Vendor factories: only the vendors with an implementation. Resend uses
 	// per-client API keys decrypted from the cache; mock ignores credentials.
 	factories := map[string]provider.Factory{
 		"mock":   provider.MockFactory(cfg.Mock),

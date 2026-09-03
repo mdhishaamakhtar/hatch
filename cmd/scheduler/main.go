@@ -1,5 +1,5 @@
-// scheduler-service — Hatch Phase 2 service. Polls Postgres for this pod's
-// hash slice of pending schedules, incubates them in an in-memory wheel
+// scheduler-service — Hatch's timer-wheel scheduler. Polls Postgres for this
+// pod's hash slice of pending schedules, incubates them in an in-memory wheel
 // persisted to bbolt, and produces `emails.due` to Kafka at the exact second
 // each schedule matures. See internal/scheduler for the goroutine pipeline.
 package main

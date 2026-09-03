@@ -1,4 +1,4 @@
-// Package recon holds the Phase 5 reconciliation-cron service: a periodic sweep
+// Package recon holds the reconciliation-cron service: a periodic sweep
 // that recovers schedule rows stranded by a crash and re-enqueues them onto
 // emails.due for the delivery worker to pick up. It runs two SQL passes:
 //

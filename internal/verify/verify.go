@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mdhishaamakhtar/hatch/pkg/config"
 	"github.com/mdhishaamakhtar/hatch/pkg/db"
 	hredis "github.com/mdhishaamakhtar/hatch/pkg/redis"
 	"github.com/redis/rueidis"
@@ -38,7 +39,7 @@ type Verifier struct {
 func Run(ctx context.Context, lg *zap.Logger) int {
 	rep := &Reporter{}
 
-	cfg, err := LoadConfig()
+	cfg, err := config.Load[Config]()
 	if err != nil {
 		rep.Fail("config: " + err.Error())
 		return 1
@@ -91,7 +92,7 @@ func Run(ctx context.Context, lg *zap.Logger) int {
 }
 
 // cleanup soft-deletes the verify client and confirms its key is then rejected
-// — this doubles as the Phase 1 "deleted client → 401" acceptance check.
+// — this doubles as the "deleted client → 401" acceptance check.
 func (v *Verifier) cleanup(ctx context.Context) {
 	v.rep.Section("Cleanup — soft-delete verify client")
 	if v.clientID == "" {

@@ -1,6 +1,6 @@
 // tinkgen prints a base64-encoded Tink AES256-GCM keyset JSON on stdout.
-// Used to seed the PROVIDER_CRED_KEY env var (Phase 1 admin/provider
-// credentials encryption).
+// Used to seed the PROVIDER_CRED_KEY env var (the key the API encrypts per-client provider
+// credentials with).
 //
 //	go run ./cmd/tinkgen
 package main

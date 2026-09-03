@@ -3,7 +3,7 @@
 // through `emails.due` and the retry tiers.
 //
 // Producer config: acks=all (required by idempotent mode), linger 5ms, max
-// batch 1MiB. The same NewProducer is reused by the Phase 5 reconciliation
+// batch 1MiB. The same NewProducer is reused by the reconciliation
 // cron and the retry-consumer re-enqueue path.
 package kafka
 
@@ -124,7 +124,7 @@ func InjectOtelHeaders(ctx context.Context, r *kgo.Record) {
 }
 
 // ExtractOtelHeaders returns a context with the span context decoded from the
-// record's headers. Used by Phase 3+ consumers.
+// record's headers. Used by the delivery worker and the retry consumers.
 func ExtractOtelHeaders(ctx context.Context, r *kgo.Record) context.Context {
 	return otel.GetTextMapPropagator().Extract(ctx, headerCarrier{r: r})
 }

@@ -1,7 +1,7 @@
-// reconciliation-cron — Hatch Phase 5 service. Sweeps Postgres on an interval
-// for schedule rows stranded by a crash and re-enqueues them onto emails.due.
-// Runs as a long-lived Deployment (not a CronJob) so Prometheus can scrape its
-// /metrics between sweeps. See internal/recon for the two passes.
+// reconciliation-cron — Hatch's crash-recovery cron. Sweeps Postgres on an
+// interval for schedule rows stranded by a crash and re-enqueues them onto
+// emails.due. Runs as a long-lived Deployment (not a CronJob) so Prometheus can
+// scrape its /metrics between sweeps. See internal/recon for the two passes.
 package main
 
 import (

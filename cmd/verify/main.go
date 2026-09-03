@@ -1,8 +1,7 @@
 // verify — Hatch's in-cluster acceptance auditor. Runs as a one-shot Job and
 // reaches every dependency over ClusterDNS, so verification never depends on
 // host port-forwards. It prints one [PASS]/[FAIL] line per check and exits
-// non-zero if any check fails. The suite is cumulative across phases; see
-// internal/verify.
+// non-zero if any check fails. The suite is cumulative; see internal/verify.
 package main
 
 import (

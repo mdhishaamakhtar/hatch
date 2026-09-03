@@ -1,7 +1,12 @@
-// Package provider defines the email-provider abstraction Delivery Workers
-// route sends through. Real provider implementations (Resend, SES, SendGrid,
-// SMTP) land in Phase 3; Phase 0 ships only the interface and a MockProvider
-// used by benchmarks.
+// Package provider defines the email-provider abstraction delivery workers
+// route sends through, plus the implementations behind it: Resend for real
+// sends, and a MockProvider with env-tunable latency and error rates for
+// benchmarks and the acceptance verifier.
+//
+// A vendor is wired in as a Factory — the delivery worker holds a
+// map[vendor]Factory and builds a per-client Provider from that client's
+// decrypted credentials on first send. Adding SES, SendGrid, or SMTP means
+// adding a Factory here and an entry to that map; nothing else changes.
 package provider
 
 import (

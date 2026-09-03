@@ -1,4 +1,4 @@
-// Package delivery holds the Phase 3 delivery-worker service: a 3-goroutine
+// Package delivery holds the delivery-worker service: a 3-goroutine
 // pipeline that consumes `emails.due` from Kafka, hydrates each schedule from
 // Postgres, routes the send through a provider (mock or Resend) behind a
 // per-(client,vendor) circuit breaker + leaky bucket, and drives the

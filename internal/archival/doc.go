@@ -1,4 +1,4 @@
-// Package archival holds the Phase 5 partition-archival service: a periodic
+// Package archival holds the partition-archival service: a periodic
 // lifecycle sweep over the scheduled_emails partitions. For each partition whose
 // month is fully in the past, it archives the partition iff every row is in a
 // terminal state (delivered/failed/cancelled): detach from the parent, export to
