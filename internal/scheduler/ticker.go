@@ -19,6 +19,14 @@ import (
 // explicitly.
 func (p *Pipeline) RunTicker(ctx context.Context, tickC <-chan time.Time) {
 	if tickC == nil {
+		// Align to the top of the second before starting. A bare NewTicker
+		// inherits whatever phase the pod happened to start on, so a slot could
+		// fire most of a second into its own window — which, on top of the
+		// wheel's one-second resolution, doubles the worst-case lateness. With
+		// the alignment, a schedule fires within one second of its deliver_at.
+		if !sleepUntilNextSecond(ctx, p.clock) {
+			return
+		}
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		tickC = t.C
@@ -90,5 +98,19 @@ func (p *Pipeline) produceOne(ctx context.Context, id [16]byte) {
 			zap.String("schedule_id", scheduleID),
 			zap.Error(err),
 		)
+	}
+}
+
+// sleepUntilNextSecond blocks until the next whole second, reporting false if
+// ctx is cancelled first so a pod stopped during startup exits promptly.
+func sleepUntilNextSecond(ctx context.Context, clock func() time.Time) bool {
+	now := clock()
+	t := time.NewTimer(now.Truncate(time.Second).Add(time.Second).Sub(now))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }

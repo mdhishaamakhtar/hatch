@@ -21,8 +21,33 @@ type Slot struct {
 	Min, Sec int
 }
 
-// SlotOf is the slot a delivery time falls in.
+// SlotOf is the slot whose firing window contains t — that is, the slot G3
+// drains on the tick that lands inside t's second. The sub-second part of t is
+// dropped, because the wheel's resolution is one second.
+//
+// This is the ticker's view. Use SlotForDeliverAt to place a schedule.
 func SlotOf(t time.Time) Slot { return Slot{Min: t.Minute(), Sec: t.Second()} }
+
+// SlotForDeliverAt is the slot a schedule due at deliverAt must be placed in.
+//
+// It rounds *up* to the next whole second whenever deliverAt carries a
+// sub-second remainder. Placing it by SlotOf instead would truncate: a schedule
+// for 12:34:56.789 would land in slot 34:56, which fires during the 56th second
+// — up to 789ms *before* the caller asked for. A scheduler may run late; it must
+// never deliver early, and "early" is the one error a caller cannot compensate
+// for.
+//
+// The cost is that firing is now late by up to one second rather than early by
+// up to one second. That is the wheel's resolution showing through, and it is
+// the honest form of it: end-to-end latency measured from deliver_at is now
+// always a real, non-negative duration.
+func SlotForDeliverAt(deliverAt time.Time) Slot {
+	whole := deliverAt.Truncate(time.Second)
+	if whole.Before(deliverAt) {
+		whole = whole.Add(time.Second)
+	}
+	return SlotOf(whole)
+}
 
 // String is the canonical "MM:SS" form, which doubles as the bbolt key.
 func (s Slot) String() string { return fmt.Sprintf("%02d:%02d", s.Min, s.Sec) }

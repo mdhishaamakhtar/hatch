@@ -39,7 +39,7 @@ func (p *Pipeline) appendEntry(ctx context.Context, e Entry) {
 	ctx, span := p.tracer.Start(ctx, "scheduler.wheel.load")
 	defer span.End()
 
-	slot := SlotOf(e.DeliverAt)
+	slot := SlotForDeliverAt(e.DeliverAt)
 	span.SetAttributes(
 		attribute.String("slot", slot.String()),
 		attribute.String("schedule_id", uuidString(e.ID)),

@@ -128,30 +128,39 @@ constant ~30% efficiency tax, not a different bottleneck taking over.
 
 ---
 
-## 3. End-to-end, at a load the API can accept, the SLA holds
+## 3. End-to-end: the wheel's resolution dominates, and the p50 target is unreachable
 
 Production defaults (`BCRYPT_COST=12`, 4 delivery-worker replicas), 200 schedules
-with arrivals spread across wheel slots. Two independent runs:
+with arrivals spread across wheel slots.
 
-| | Run 1 | Run 2 | Target |
+| | Measured | Target | |
 |---|---|---|---|
-| Created | 200/200 | 200/200 | — |
-| Ingest RPS | 1.8 | 1.8 | — |
-| **E2E p50** | **224 ms** | **213 ms** | ≤ 500 ms — PASS |
-| **E2E p95** | **893 ms** | **886 ms** | ≤ 2 s — PASS |
-| **E2E p99** | **979 ms** | **977 ms** | ≤ 30 s — PASS |
-| Stranded rows | 0 | 0 | 0 — PASS |
+| E2E p50 | 1.77 s | ≤ 500 ms | FAIL |
+| E2E p95 | 2.463 s | ≤ 2 s | FAIL |
+| E2E p99 | 4.047 s | ≤ 30 s | PASS |
+| Stranded rows | 0 | 0 | PASS |
 
-Every quantile reproduces within 5%. Across every run in this document — several
-thousand schedules — there were **zero failures, zero retries, and zero stranded
-rows**; every schedule reached `delivered`.
+**The p50 target is not reachable by this design, and no amount of tuning gets
+there.** The wheel's resolution is one second, so a schedule waits a mean 500 ms
+for its slot to come round; the mock provider adds ~174 ms. A pipeline with
+literally zero cost everywhere else would still median ~674 ms. Hitting a 500 ms
+p50 requires sub-second wheel slots — a design change, not a configuration one.
 
-Note what the p50 leaves: the mock provider alone accounts for ~174 ms of a
-500 ms budget. A real provider at 300 ms would breach the p50 target on provider
-latency alone, with the rest of the pipeline contributing nothing. The p50 target
-is worth revisiting against the provider you actually intend to use.
+Either restate the SLA at a resolution the wheel can support (p50 ≤ 2 s is
+comfortably met today), or shorten the tick.
 
----
+> **An earlier version of this document reported p50 224 ms here and called it a
+> PASS. That was wrong.** `SlotOf` truncated `deliver_at` to the second, so a
+> schedule for `12:34:56.789` fired during the 56th second — up to 789 ms
+> *early*. 38% of observations recorded end-to-end latencies below the provider's
+> own 150 ms minimum, which is physically impossible and should have been the
+> tell. The wheel now rounds up (`SlotForDeliverAt`) so it can never fire early,
+> and the ticker aligns to the wall-clock second; after the fix, zero
+> observations fall below 1 s. The numbers above are from the corrected build.
+
+Across every run in this document — several thousand schedules, including pods
+killed and rescaled mid-flight — there were **zero failures, zero retries, and
+zero stranded rows**. Every schedule reached `delivered`.
 
 ## 4. Two things worth fixing, found by measuring
 

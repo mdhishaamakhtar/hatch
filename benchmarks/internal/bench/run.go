@@ -78,6 +78,16 @@ func NewRunner(ctx context.Context, cfg Config, opts Options) (*Runner, error) {
 	}
 
 	api := newAPIClient(cfg.APIBase, 64)
+
+	// Preflight before anything expensive. A scheduler port-forward that died
+	// with the last rollout is invisible until forceAllPolls runs, which is
+	// after the load phase — so the run burns minutes of work and then fails on
+	// a connection refused. Check every dependency while failing is still free.
+	if err := preflight(ctx, cfg, api); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
 	name := "bench-" + time.Now().UTC().Format("20060102-150405")
 	// max_rps far above any rate this stack can serve: the per-client limiter is
 	// not under test here, and the schema default of 100 would silently cap an
@@ -260,4 +270,31 @@ func spreadLabel(d time.Duration) string {
 		return "none (all schedules mature in a single wheel slot)"
 	}
 	return d.String()
+}
+
+// preflight verifies every endpoint the run will need, before it provisions
+// anything or generates load. Each failure names the fix, because every one of
+// them is a missing port-forward or a stopped stack rather than a real result.
+func preflight(ctx context.Context, cfg Config, api *apiClient) error {
+	hc := &http.Client{Timeout: 5 * time.Second}
+
+	if resp, err := api.do(ctx, http.MethodGet, "/healthz", "", nil); err != nil || resp.code != http.StatusOK {
+		return fmt.Errorf("scheduler-api not reachable at %s (is the stack up? `make up-all`): %v", cfg.APIBase, err)
+	}
+	for _, u := range cfg.SchedulerAdminURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"/healthz", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			return fmt.Errorf("scheduler admin %s not reachable (run `make bench-pf`; "+
+				"per-pod forwards break whenever the scheduler pods are replaced): %w", u, err)
+		}
+		_ = resp.Body.Close()
+	}
+	if _, _, err := newPromClient(cfg.PromURL).scalar(ctx, "up"); err != nil {
+		return fmt.Errorf("prometheus not reachable at %s (run `make bench-pf`): %w", cfg.PromURL, err)
+	}
+	return nil
 }

@@ -140,3 +140,44 @@ func TestWheelIsSafeForConcurrentUse(t *testing.T) {
 		t.Fatalf("wheel holds %d distinct ids, want 256", total)
 	}
 }
+
+// A schedule must never fire before the time the caller asked for. The wheel's
+// resolution is one second, so a deliver_at carrying a sub-second remainder has
+// to round up into the next slot — truncating would fire it up to 999ms early.
+func TestSlotForDeliverAtNeverRoundsDown(t *testing.T) {
+	base := time.Date(2030, 1, 1, 12, 34, 56, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		deliverAt time.Time
+		want      Slot
+	}{
+		{"exactly on the second stays put", base, Slot{Min: 34, Sec: 56}},
+		{"1ns past rounds up", base.Add(time.Nanosecond), Slot{Min: 34, Sec: 57}},
+		{"mid-second rounds up", base.Add(500 * time.Millisecond), Slot{Min: 34, Sec: 57}},
+		{"999ms rounds up", base.Add(999 * time.Millisecond), Slot{Min: 34, Sec: 57}},
+		{"rounds up across a minute", time.Date(2030, 1, 1, 12, 34, 59, 1, time.UTC), Slot{Min: 35, Sec: 0}},
+		{"rounds up across an hour", time.Date(2030, 1, 1, 12, 59, 59, 1, time.UTC), Slot{Min: 0, Sec: 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SlotForDeliverAt(tc.deliverAt); got != tc.want {
+				t.Errorf("SlotForDeliverAt(%s) = %v, want %v", tc.deliverAt.Format(time.RFC3339Nano), got, tc.want)
+			}
+		})
+	}
+}
+
+// The two slot functions serve opposite roles and must not be interchanged:
+// SlotOf answers "which slot does this tick drain", SlotForDeliverAt answers
+// "which slot must this schedule wait in". They agree only on whole seconds.
+func TestSlotOfTruncatesWhereSlotForDeliverAtRoundsUp(t *testing.T) {
+	mid := time.Date(2030, 1, 1, 12, 34, 56, int(500*time.Millisecond), time.UTC)
+
+	if got, want := SlotOf(mid), (Slot{Min: 34, Sec: 56}); got != want {
+		t.Errorf("SlotOf(%v) = %v, want %v — the ticker must drain the slot it is inside", mid, got, want)
+	}
+	if got, want := SlotForDeliverAt(mid), (Slot{Min: 34, Sec: 57}); got != want {
+		t.Errorf("SlotForDeliverAt(%v) = %v, want %v — a schedule must not fire early", mid, got, want)
+	}
+}
