@@ -2,317 +2,132 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-ROOT := $(shell pwd)
-KUBECTL := kubectl
-HELM := helm
+# The commands in cmd/ that run in the cluster.
+SERVICES := api scheduler delivery-worker retry-consumer reconciliation-cron partition-archival
 
-NS_HATCH := hatch
-NS_OBS := observability
-
-# HOST_DATABASE_URL is the localhost-via-port-forward DSN. Cluster services
-# use DATABASE_URL (ClusterDNS) from the hatch-secrets Secret. Never overlap.
+# Postgres as `make port-forward` exposes it.
 HOST_DATABASE_URL ?= postgres://hatch:hatchpass@localhost:5432/hatch?sslmode=disable
+
+HELM_HATCH := helm upgrade --install hatch ./helm/hatch --namespace hatch --create-namespace --wait --wait-for-jobs --timeout 5m
 
 .PHONY: help
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_%-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-.PHONY: build
-build: build-api build-scheduler build-delivery-worker build-retry-consumer build-reconciliation-cron build-partition-archival ## Build all Hatch service Docker images
+# ─── Develop ────────────────────────────────────────────────────────────────
 
-.PHONY: build-api
-build-api: swag-gen ## Build the scheduler-api Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.api -t hatch/api:$$TAG -t hatch/api:dev . && \
-	  echo $$TAG > .api-image-tag && \
-	  echo "→ tagged: hatch/api:$$TAG (also hatch/api:dev)"
+.PHONY: test
+test: ## Run the tests
+	go test -race ./...
 
-.PHONY: build-scheduler
-build-scheduler: ## Build the scheduler-service Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.scheduler -t hatch/scheduler:$$TAG -t hatch/scheduler:dev . && \
-	  echo $$TAG > .scheduler-image-tag && \
-	  echo "→ tagged: hatch/scheduler:$$TAG (also hatch/scheduler:dev)"
+.PHONY: sqlc
+sqlc: ## Regenerate internal/db from queries/ and migrations/
+	sqlc generate
 
-.PHONY: build-delivery-worker
-build-delivery-worker: ## Build the delivery-worker Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.delivery-worker -t hatch/delivery-worker:$$TAG -t hatch/delivery-worker:dev . && \
-	  echo $$TAG > .delivery-worker-image-tag && \
-	  echo "→ tagged: hatch/delivery-worker:$$TAG (also hatch/delivery-worker:dev)"
-
-.PHONY: build-retry-consumer
-build-retry-consumer: ## Build the retry-consumer Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.retry-consumer -t hatch/retry-consumer:$$TAG -t hatch/retry-consumer:dev . && \
-	  echo $$TAG > .retry-consumer-image-tag && \
-	  echo "→ tagged: hatch/retry-consumer:$$TAG (also hatch/retry-consumer:dev)"
-
-.PHONY: build-reconciliation-cron
-build-reconciliation-cron: ## Build the reconciliation-cron Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.reconciliation-cron -t hatch/reconciliation-cron:$$TAG -t hatch/reconciliation-cron:dev . && \
-	  echo $$TAG > .reconciliation-cron-image-tag && \
-	  echo "→ tagged: hatch/reconciliation-cron:$$TAG (also hatch/reconciliation-cron:dev)"
-
-.PHONY: build-partition-archival
-build-partition-archival: ## Build the partition-archival Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.partition-archival -t hatch/partition-archival:$$TAG -t hatch/partition-archival:dev . && \
-	  echo $$TAG > .partition-archival-image-tag && \
-	  echo "→ tagged: hatch/partition-archival:$$TAG (also hatch/partition-archival:dev)"
-
-.PHONY: build-verify
-build-verify: ## Build the in-cluster verify Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.verify -t hatch/verify:$$TAG -t hatch/verify:dev . && \
-	  echo $$TAG > .verify-image-tag && \
-	  echo "→ tagged: hatch/verify:$$TAG (also hatch/verify:dev)"
-
-.PHONY: build-bench
-build-bench: ## Build the in-cluster benchmark Docker image with a unique tag
-	@TAG=dev-$$(date +%s); \
-	  docker build -f Dockerfile.bench -t hatch/bench:$$TAG -t hatch/bench:dev . && \
-	  echo $$TAG > .bench-image-tag && \
-	  echo "→ tagged: hatch/bench:$$TAG (also hatch/bench:dev)"
-
-.PHONY: swag-gen
-swag-gen: ## Regenerate OpenAPI spec under docs/ from handler annotations
-	go tool swag init \
-	  -g cmd/api/main.go \
-	  -o docs \
-	  --parseInternal \
-	  --parseDependency
-
-.PHONY: run-api
-run-api: ## Run scheduler-api locally against HOST_* DSNs (no k8s)
-	@set -a; . ./.env; set +a; \
-	  DATABASE_URL="$$HOST_DATABASE_URL" REDIS_ADDR="$$HOST_REDIS_ADDR" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/api
-
-.PHONY: run-scheduler
-run-scheduler: ## Run scheduler-service locally against HOST_* DSNs (single pod)
-	@set -a; . ./.env; set +a; \
-	  DATABASE_URL="$$HOST_DATABASE_URL" \
-	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
-	  POD_INDEX=0 TOTAL_PODS=1 \
-	  SCHEDULER_WHEEL_DB_PATH="$${SCHEDULER_WHEEL_DB_PATH:-./.local-wheel.db}" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/scheduler
-
-.PHONY: run-delivery-worker
-run-delivery-worker: ## Run delivery-worker locally against HOST_* DSNs (no k8s)
-	@set -a; . ./.env; set +a; \
-	  DATABASE_URL="$$HOST_DATABASE_URL" \
-	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
-	  REDIS_ADDR="$$HOST_REDIS_ADDR" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/delivery-worker
-
-.PHONY: run-retry-consumer
-run-retry-consumer: ## Run retry-consumer locally against HOST_* brokers (no k8s)
-	@set -a; . ./.env; set +a; \
-	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/retry-consumer
-
-.PHONY: run-reconciliation-cron
-run-reconciliation-cron: ## Run reconciliation-cron locally against HOST_* DSNs (no k8s)
-	@set -a; . ./.env; set +a; \
-	  DATABASE_URL="$$HOST_DATABASE_URL" \
-	  KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/reconciliation-cron
-
-.PHONY: run-partition-archival
-run-partition-archival: ## Run partition-archival locally against HOST_* DSNs (no k8s)
-	@set -a; . ./.env; set +a; \
-	  DATABASE_URL="$$HOST_DATABASE_URL" \
-	  ARCHIVE_DIR="$${ARCHIVE_DIR:-./.local-archive}" \
-	  OTLP_ENDPOINT="" \
-	  go run ./cmd/partition-archival
+.PHONY: swag
+swag: ## Regenerate the OpenAPI spec in docs/ from the API's annotations
+	go tool swag init -g cmd/api/main.go -o docs --parseInternal --parseDependency --useStructName
 
 .PHONY: gen-provider-key
-gen-provider-key: ## Print a base64 Tink AES256-GCM keyset for PROVIDER_CRED_KEY
+gen-provider-key: ## Print a new keyset for PROVIDER_CRED_KEY
 	@go run ./cmd/tinkgen
 
-.PHONY: deps
-deps: ## Pull helm chart dependencies
-	cd helm/observability && $(HELM) dependency update
+run-%: ## Run a service against the port-forwarded stack, e.g. make run-api
+	@set -a; . ./.env; set +a; mkdir -p .local; \
+	  DATABASE_URL="$$HOST_DATABASE_URL" REDIS_ADDR="$$HOST_REDIS_ADDR" KAFKA_BROKERS="$$HOST_KAFKA_BROKERS" \
+	  OTLP_ENDPOINT= POD_INDEX=0 TOTAL_PODS=1 SCHEDULER_WHEEL_DB_PATH=.local/wheel.db ARCHIVE_DIR=.local/archive \
+	  go run ./cmd/$*
 
-.PHONY: up-obs-crds
-up-obs-crds: deps ## Refresh Prometheus Operator CRDs for observability
-	@./scripts/apply-observability-crds.sh
+# ─── Images ─────────────────────────────────────────────────────────────────
+
+.PHONY: build
+build: $(addprefix build-,$(SERVICES)) ## Build every service's image
+
+# Each build gets a tag of its own, which is what makes Kubernetes roll the
+# pods over to it; `make up-pods` deploys the tag last built.
+build-api: swag
+build-%: ## Build one command's image, e.g. make build-api
+	@tag=dev-$$(date +%s); \
+	  docker build --build-arg CMD=$* -t hatch/$*:$$tag -t hatch/$*:dev . && \
+	  echo $$tag > .$*-image-tag && \
+	  echo "→ hatch/$*:$$tag"
+
+# ─── Deploy ─────────────────────────────────────────────────────────────────
 
 .PHONY: up
-up: ## Deploy hatch in three phases: infra, jobs, then service pods. Assumes obs is already up.
-	$(MAKE) up-infra
-	$(MAKE) up-jobs
+up: ## Deploy Hatch: the infrastructure, then the migrations and topics, then the services
+	@./scripts/inject-secrets.sh
+	@./scripts/sync-migrations.sh
+	$(HELM_HATCH) --set services.enabled=false --set jobs.enabled=false
+	$(HELM_HATCH) --set services.enabled=false --set jobs.enabled=true
 	$(MAKE) up-pods
 
-.PHONY: up-infra
-up-infra: ## Bring up hatch infra only (postgres/redis/kafka)
-	@./scripts/inject-secrets.sh
-	@./scripts/sync-migrations.sh
-	@echo "→ deploying hatch infra (postgres, redis, kafka)"; \
-	  $(HELM) upgrade --install hatch ./helm/hatch \
-	    --namespace $(NS_HATCH) --create-namespace \
-	    --set api.enabled=false \
-	    --set scheduler.enabled=false \
-	    --set deliveryWorker.enabled=false \
-	    --set retryConsumer.enabled=false \
-	    --set reconciliationCron.enabled=false \
-	    --set partitionArchival.enabled=false \
-	    --set migrations.enabled=false \
-	    --set kafka.topicsJob.enabled=false \
-	    --wait --wait-for-jobs --timeout 5m
-	@echo
-	@echo "Hatch infra is up. Next: make up-jobs"
-
-.PHONY: up-jobs
-up-jobs: ## Bring up hatch jobs only (migrations + topic bootstrap)
-	@./scripts/inject-secrets.sh
-	@./scripts/sync-migrations.sh
-	@echo "→ deploying hatch jobs (db migrations, kafka topics)"; \
-	  $(HELM) upgrade --install hatch ./helm/hatch \
-	    --namespace $(NS_HATCH) --create-namespace \
-	    --set api.enabled=false \
-	    --set scheduler.enabled=false \
-	    --set deliveryWorker.enabled=false \
-	    --set retryConsumer.enabled=false \
-	    --set reconciliationCron.enabled=false \
-	    --set partitionArchival.enabled=false \
-	    --set migrations.enabled=true \
-	    --set kafka.topicsJob.enabled=true \
-	    --wait --wait-for-jobs --timeout 5m
-	@echo
-	@echo "Hatch jobs are up. Next: make up-pods"
-
 .PHONY: up-pods
-up-pods: ## Bring up hatch service pods only (api, scheduler, workers, crons)
-	@API_TAG=$$([ -f .api-image-tag ] && cat .api-image-tag || echo dev); \
-	 SCHED_TAG=$$([ -f .scheduler-image-tag ] && cat .scheduler-image-tag || echo dev); \
-	 DW_TAG=$$([ -f .delivery-worker-image-tag ] && cat .delivery-worker-image-tag || echo dev); \
-	 RC_TAG=$$([ -f .retry-consumer-image-tag ] && cat .retry-consumer-image-tag || echo dev); \
-	 RECON_TAG=$$([ -f .reconciliation-cron-image-tag ] && cat .reconciliation-cron-image-tag || echo dev); \
-	 ARCH_TAG=$$([ -f .partition-archival-image-tag ] && cat .partition-archival-image-tag || echo dev); \
-	  echo "→ deploying api with hatch/api:$$API_TAG, scheduler with hatch/scheduler:$$SCHED_TAG, delivery-worker with hatch/delivery-worker:$$DW_TAG, retry-consumer with hatch/retry-consumer:$$RC_TAG, reconciliation-cron with hatch/reconciliation-cron:$$RECON_TAG, partition-archival with hatch/partition-archival:$$ARCH_TAG"; \
-	  $(HELM) upgrade --install hatch ./helm/hatch \
-	    --namespace $(NS_HATCH) --create-namespace \
-	    --set api.enabled=true \
-	    --set api.image=hatch/api:$$API_TAG \
-	    --set scheduler.enabled=true \
-	    --set scheduler.image=hatch/scheduler:$$SCHED_TAG \
-	    --set deliveryWorker.enabled=true \
-	    --set deliveryWorker.image=hatch/delivery-worker:$$DW_TAG \
-	    --set retryConsumer.enabled=true \
-	    --set retryConsumer.image=hatch/retry-consumer:$$RC_TAG \
-	    --set reconciliationCron.enabled=true \
-	    --set reconciliationCron.image=hatch/reconciliation-cron:$$RECON_TAG \
-	    --set partitionArchival.enabled=true \
-	    --set partitionArchival.image=hatch/partition-archival:$$ARCH_TAG \
-	    --set migrations.enabled=false \
-	    --set kafka.topicsJob.enabled=false \
-	    --wait --wait-for-jobs --timeout 5m
-	@echo
-	@echo "Hatch up. Port-forward with: make port-forward"
+up-pods: ## Deploy the services, with the images `make build` last built
+	@images=""; \
+	  for s in $(SERVICES); do images="$$images --set images.$$s=hatch/$$s:$$(cat .$$s-image-tag 2>/dev/null || echo dev)"; done; \
+	  $(HELM_HATCH) --set services.enabled=true --set jobs.enabled=false $$images
 
 .PHONY: down
-down: pf-stop ## Tear down hatch helm release (keeps PVCs, leaves obs running)
-	-$(HELM) uninstall hatch -n $(NS_HATCH)
-
-.PHONY: restart
-restart: ## Restart hatch only (down + up, keeps PVCs and obs)
-	$(MAKE) down
-	$(MAKE) up
+down: ## Uninstall Hatch, keeping its volumes
+	-pkill -f "kubectl port-forward"
+	-helm uninstall hatch -n hatch
 
 .PHONY: up-obs
-up-obs: ## Deploy observability stack (grafana/prom/loki/tempo)
-	$(MAKE) up-obs-crds
-	$(HELM) upgrade --install observability ./helm/observability \
-	  --namespace $(NS_OBS) --create-namespace \
-	  --skip-crds \
-	  --set kps.crds.enabled=false \
-	  --wait --timeout 10m
+up-obs: ## Deploy Prometheus, Grafana, Loki and Tempo
+	cd helm/observability && helm dependency update
+	@./scripts/apply-observability-crds.sh
+	helm upgrade --install observability ./helm/observability --namespace observability --create-namespace \
+	  --skip-crds --set kps.crds.enabled=false --wait --timeout 10m
 
 .PHONY: down-obs
-down-obs: ## Tear down observability helm release (keeps PVCs)
-	-$(HELM) uninstall observability -n $(NS_OBS)
+down-obs: ## Uninstall the observability stack, keeping its volumes
+	-helm uninstall observability -n observability
 
 .PHONY: up-all
-up-all: ## First-time setup: deploy obs then hatch
-	$(MAKE) up-obs
-	$(MAKE) up
+up-all: up-obs up ## Deploy the observability stack, then Hatch
 
 .PHONY: down-all
-down-all: down down-obs ## Tear down both helm releases (keeps PVCs)
+down-all: down down-obs ## Uninstall everything, keeping the volumes
 
 .PHONY: reset
-reset: ## Nuclear option: tear down everything, wipe PVCs, redeploy clean
-	$(MAKE) down-all
-	-$(KUBECTL) -n $(NS_HATCH) delete pvc --all
-	-$(KUBECTL) -n $(NS_OBS) delete pvc --all
+reset: down-all ## Uninstall everything, delete the volumes, and deploy again
+	-kubectl -n hatch delete pvc --all
+	-kubectl -n observability delete pvc --all
 	$(MAKE) up-all
 
 .PHONY: port-forward
-port-forward: ## Start port-forwards in the background
+port-forward: ## Forward Postgres, Redis and Kafka to localhost
 	@./scripts/port-forward.sh
 
-.PHONY: pf-stop
-pf-stop: ## Stop any running kubectl port-forward processes
-	-pkill -f "kubectl port-forward" || true
-
-.PHONY: status
-status: ## Show pod status across both namespaces
-	@$(KUBECTL) get pods -n $(NS_HATCH) -o wide
-	@echo "---"
-	@$(KUBECTL) get pods -n $(NS_OBS) -o wide
-
-.PHONY: logs
-logs: ## Tail logs for SVC=<component> (e.g. SVC=postgres)
-	@test -n "$(SVC)" || (echo "SVC required, e.g. make logs SVC=postgres" && exit 1)
-	$(KUBECTL) logs -f -l app.kubernetes.io/component=$(SVC) -n $(NS_HATCH) --tail=200
-
 .PHONY: migrate
-migrate: ## Run golang-migrate up against local Postgres
+migrate: ## Apply the migrations to the port-forwarded database
 	migrate -path migrations -database "$(HOST_DATABASE_URL)" up
 
 .PHONY: migrate-down
-migrate-down: ## Roll back all migrations
+migrate-down: ## Roll back every migration on the port-forwarded database
 	migrate -path migrations -database "$(HOST_DATABASE_URL)" down -all
 
-.PHONY: sqlc
-sqlc: ## Regenerate Go from queries via sqlc
-	sqlc generate
+.PHONY: status
+status: ## Show the pods
+	@kubectl get pods -n hatch -o wide
+	@kubectl get pods -n observability -o wide
 
-.PHONY: test
-test: ## Run all unit tests under -race
-	go test -race ./pkg/... ./internal/...
+.PHONY: logs
+logs: ## Follow a component's logs, e.g. make logs SVC=scheduler
+	@test -n "$(SVC)" || { echo "usage: make logs SVC=<component>"; exit 1; }
+	kubectl logs -f -l app.kubernetes.io/component=$(SVC) -n hatch --tail=200 --max-log-requests=10
+
+# ─── Verify and benchmark ───────────────────────────────────────────────────
 
 .PHONY: verify
-verify: ## Run the full cumulative acceptance audit (host prelude + in-cluster Job)
+verify: ## Check the deployed stack end to end
 	@./scripts/verify.sh
 
-# ─── Benchmarks ────────────────────────────────────────────────────────────
-# Two tiers. bench-micro runs in-process and needs no cluster; bench/bench-all
-# drive the deployed stack from an in-cluster Job, so no port-forward has to
-# survive an hour-long run. See docs/BENCHMARKS.md.
-
-.PHONY: bench-micro
-bench-micro: ## Tier 0: in-process Go micro-benchmarks (no cluster needed)
-	go test ./internal/... ./pkg/... -run '^$$' -bench . -benchmem
-
 .PHONY: bench
-bench: ## Run one scenario, e.g. make bench SCENARIO=delivery COUNT=2000
+bench: ## Run one benchmark, e.g. make bench SCENARIO=delivery COUNT=2000
 	@./scripts/bench.sh one $${SCENARIO:-e2e} $${COUNT:-400} $${WORKERS:-32} $${SPREAD:-0s} "$${LABEL:-manual}"
 
 .PHONY: bench-all
-bench-all: ## Run the full reference suite and write benchmarks/ (~45-60 min)
+bench-all: ## Run the reference benchmarks and write benchmarks/ (about an hour)
 	@./scripts/bench.sh all
-
-.PHONY: bench-list
-bench-list: ## List the benchmark scenarios
-	@echo "  ingest     How many schedules per second can the API accept?"
-	@echo "  delivery   How many emails per second can the delivery workers send?"
-	@echo "  e2e        How long after deliver_at does an email actually go out?"

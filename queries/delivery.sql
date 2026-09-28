@@ -1,13 +1,14 @@
--- name: BatchFetchSchedules :many
+-- name: GetSchedules :many
+-- deliver_ats must hold the deliver_at of every id: it is what lets Postgres
+-- prune to the partitions involved instead of probing all of them.
 SELECT *
 FROM scheduled_emails
-WHERE id = ANY(@ids::bytea[]);
+WHERE id = ANY(sqlc.arg(ids)::bytea[])
+  AND deliver_at = ANY(sqlc.arg(deliver_ats)::timestamptz[]);
 
--- Every MarkX below guards the transition with a status predicate and returns
--- its row count (:execrows), so terminal states are sticky: a duplicate
--- emails.due record for a delivered/failed/cancelled row, or a cancel that
--- landed mid-send, changes 0 rows instead of silently rewriting the outcome.
--- The caller treats 0 rows as "state moved under me — log and stop".
+-- Every Mark* guards its transition with a status predicate and reports the rows
+-- it changed, so terminal states are sticky: a duplicate emails.due record, or a
+-- cancel that lands mid-send, changes nothing instead of rewriting the outcome.
 
 -- name: MarkProcessing :execrows
 UPDATE scheduled_emails
@@ -56,7 +57,13 @@ WHERE id = $1
   AND deliver_at = $2
   AND status = 'processing';
 
--- name: GetClientForDelivery :one
+-- name: IsClientActive :one
 SELECT is_active
 FROM clients
 WHERE id = $1;
+
+-- name: ListActiveProviders :many
+SELECT vendor, credentials
+FROM client_providers
+WHERE client_id = $1
+  AND is_active;

@@ -7,6 +7,9 @@ CREATE TYPE schedule_status AS ENUM (
     'cancelled'
 );
 
+-- Partitioned by month on deliver_at. A schedule's id is a UUIDv7 whose
+-- timestamp is its deliver_at (see internal/db), so a lookup by id can always
+-- filter on deliver_at too and touch one partition instead of all of them.
 CREATE TABLE scheduled_emails (
     id               bytea           NOT NULL,
     client_id        bytea           NOT NULL REFERENCES clients (id),
@@ -27,20 +30,17 @@ CREATE TABLE scheduled_emails (
     PRIMARY KEY (id, deliver_at)
 ) PARTITION BY RANGE (deliver_at);
 
--- Partitioned-table limitation: a UNIQUE constraint must include every
--- partition key column. Since dedup is by (client_id, idempotency_key) only,
--- we enforce it in a side table that points at the owning schedule row.
+-- The scheduler's poll and reconciliation's stuck-pending sweep.
+CREATE INDEX scheduled_emails_status_deliver_at_idx ON scheduled_emails (status, deliver_at);
+-- Reconciliation's stuck-processing and orphaned-retry sweeps.
+CREATE INDEX scheduled_emails_status_updated_at_idx ON scheduled_emails (status, updated_at);
+
+-- A unique constraint on a partitioned table must include the partition key,
+-- so per-client idempotency keys are enforced in this side table instead.
 CREATE TABLE schedule_idempotency (
     client_id        bytea       NOT NULL REFERENCES clients (id),
     idempotency_key  text        NOT NULL,
     schedule_id      bytea       NOT NULL,
-    deliver_at       timestamptz NOT NULL,
     created_at       timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (client_id, idempotency_key)
 );
-
-CREATE INDEX scheduled_emails_deliver_status_idx
-    ON scheduled_emails (deliver_at, status);
-
-CREATE INDEX scheduled_emails_status_updated_idx
-    ON scheduled_emails (status, updated_at);

@@ -1,88 +1,71 @@
 package delivery
 
-import "github.com/mdhishaamakhtar/hatch/pkg/metrics"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
 
-// Metric vectors for the delivery worker. Names + labels follow the
-// Observability doc (hatch_delivery_* in the project's `hatch` namespace).
-//
-// Per-(client,vendor) state (breaker, bucket) is collapsed to a `provider`
-// (vendor) label to keep cardinality bounded; at the client counts Hatch
-// targets, last-writer-wins on these gauges is acceptable.
+// Metrics labelled by provider carry the vendor only, not the client: a series
+// per client would grow without bound.
 var (
-	mBatchSize = metrics.NewHistogram(
-		"delivery", "batch_size",
-		"Number of schedule ids fetched per emails.due batch.",
-		[]float64{1, 10, 50, 100, 250, 500, 1000, 2000},
-	)
-	mBatchDuration = metrics.NewHistogram(
-		"delivery", "batch_duration_seconds",
-		"Wall time to process one emails.due batch.",
-		[]float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
-	)
-	mE2ELatency = metrics.NewHistogram(
-		"delivery", "e2e_latency_seconds",
-		"From scheduled deliver_at to successful delivery.",
-		[]float64{.1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
-	)
-	mSends = metrics.NewCounterVec(
-		"delivery", "sends_total",
-		"Provider send attempts by vendor and outcome.",
-		"provider", "status", // success | transient | rate_limited | permanent_error
-	)
-	mSendDuration = metrics.NewHistogramVec(
-		"delivery", "provider_send_duration_seconds",
-		"Latency of a single provider Send call.",
-		[]float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
-		"provider",
-	)
-	mCacheOps = metrics.NewCounterVec(
-		"delivery", "client_cache_total",
-		"Client cache lookups by result.",
-		"result", // hit | miss | unavailable
-	)
-	mIdem = metrics.NewCounterVec(
-		"delivery", "idempotency_total",
-		"Redis idempotency claim results.",
-		"result", // acquired | duplicate_sent | duplicate_in_flight | unavailable
-	)
-	mSkipped = metrics.NewCounterVec(
-		"delivery", "skipped_total",
-		"Records dropped because the row was already in a terminal state.",
-		"status", // delivered | failed | cancelled
-	)
-	mDeferred = metrics.NewCounterVec(
-		"delivery", "deferred_total",
-		"Sends deferred to the retry tiers without a provider call, by reason.",
-		"reason", // provider_breaker_open | provider_no_capacity
-	)
-	mLostRace = metrics.NewCounterVec(
-		"delivery", "status_write_lost_total",
-		"Guarded status writes that changed 0 rows because the row moved first.",
-		"attempted", // processing | delivered | retrying | failed | cancelled
-	)
-	mRetries = metrics.NewCounterVec(
-		"delivery", "retries_total",
-		"Retry re-enqueues by tier.",
-		"tier", // 1min | 5min | 30min
-	)
-	mFailed = metrics.NewCounterVec(
-		"delivery", "failed_total",
-		"Terminal failures by reason.",
-		"reason", // no_active_providers | retry_exhausted | provider_error
-	)
-	mCancelled = metrics.NewCounterVec(
-		"delivery", "cancelled_total",
-		"Cancelled-during-delivery by reason.",
-		"reason", // client_inactive
-	)
-	mBreakerState = metrics.NewGaugeVec(
-		"delivery", "circuit_breaker_state",
-		"Per-vendor circuit breaker state (0=closed, 1=half-open, 2=open).",
-		"provider",
-	)
-	mBucketTokens = metrics.NewGaugeVec(
-		"delivery", "leaky_bucket_tokens",
-		"Available leaky-bucket tokens for a vendor (last observed).",
-		"provider",
-	)
+	batchSizes = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "hatch_delivery_batch_size",
+		Help:    "Records per batch read from emails.due.",
+		Buckets: []float64{1, 10, 50, 100, 250, 500, 1000, 2000},
+	})
+	batchDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "hatch_delivery_batch_duration_seconds",
+		Help:    "Time to process one batch from emails.due.",
+		Buckets: []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
+	})
+	e2eLatency = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "hatch_delivery_e2e_latency_seconds",
+		Help:    "Time from a schedule's deliver_at to its successful send.",
+		Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
+	})
+	sends = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_sends_total",
+		Help: "Provider send attempts by outcome: success, transient, rate_limited, permanent_error or aborted.",
+	}, []string{"provider", "status"})
+	sendDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "hatch_delivery_provider_send_duration_seconds",
+		Help:    "Latency of one provider send.",
+		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
+	}, []string{"provider"})
+	cacheLookups = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_client_cache_total",
+		Help: "Client cache lookups by result: hit, miss or unavailable.",
+	}, []string{"result"})
+	idempotency = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_idempotency_total",
+		Help: "Send claims by result: acquired, duplicate_sent, duplicate_in_flight or unavailable.",
+	}, []string{"result"})
+	skipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_skipped_total",
+		Help: "Records dropped because their schedule had already finished, by its status.",
+	}, []string{"status"})
+	deferred = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_deferred_total",
+		Help: "Sends put off to a retry tier without contacting a provider, by reason.",
+	}, []string{"reason"})
+	lostRaces = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_status_write_lost_total",
+		Help: "Status writes that changed nothing because the row had already moved.",
+	}, []string{"attempted"})
+	retries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_retries_total",
+		Help: "Sends parked on a retry tier, by tier.",
+	}, []string{"tier"})
+	failed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "hatch_delivery_failed_total",
+		Help: "Schedules that failed for good, by reason: no_active_providers, retry_exhausted or provider_error.",
+	}, []string{"reason"})
+	cancelled = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "hatch_delivery_cancelled_total",
+		Help: "Schedules cancelled at send time because their client had been deactivated.",
+	})
+	breakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "hatch_delivery_circuit_breaker_state",
+		Help: "The last circuit breaker state change seen per vendor: 0 closed, 1 half-open, 2 open.",
+	}, []string{"provider"})
 )

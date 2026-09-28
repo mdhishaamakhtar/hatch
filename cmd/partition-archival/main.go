@@ -1,49 +1,35 @@
-// partition-archival — Hatch's partition-lifecycle cron. Sweeps the
-// scheduled_emails partitions on an interval and, for each fully-past month
-// whose rows are all terminal, detaches it, exports it to a gzip CSV, and drops
-// it. Runs as a long-lived Deployment (not a CronJob) so Prometheus can scrape
-// its /metrics between sweeps. See internal/archival for the design.
+// Command partition-archival periodically exports and drops the partitions of
+// scheduled_emails whose month is over and whose schedules have all finished.
+// It is a long-running process rather than a CronJob so that Prometheus can
+// scrape it between sweeps.
 package main
 
 import (
-	"fmt"
+	"context"
 
-	"github.com/mdhishaamakhtar/hatch/gen"
+	"github.com/caarlos0/env/v11"
 	"github.com/mdhishaamakhtar/hatch/internal/archival"
-	"github.com/mdhishaamakhtar/hatch/pkg/config"
-	"github.com/mdhishaamakhtar/hatch/pkg/db"
-	"github.com/mdhishaamakhtar/hatch/pkg/service"
-	"go.opentelemetry.io/otel"
+	"github.com/mdhishaamakhtar/hatch/internal/db"
+	"github.com/mdhishaamakhtar/hatch/internal/httpx"
+	"github.com/mdhishaamakhtar/hatch/internal/service"
 	"go.uber.org/zap"
 )
 
-func main() { service.Main("partition-archival", run) }
+func main() {
+	service.Run("partition-archival", func(ctx context.Context, lg *zap.Logger) error {
+		cfg, err := env.ParseAs[archival.Config]()
+		if err != nil {
+			return err
+		}
+		pool, err := db.Connect(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
 
-func run(lg *zap.Logger) error {
-	cfg, err := config.Load[archival.Config]()
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-
-	ctx, cancel := service.SignalContext()
-	defer cancel()
-
-	flushTraces, err := service.InitTracer(ctx, lg, "partition-archival", cfg.OTLPEndpoint)
-	if err != nil {
-		return err
-	}
-	defer flushTraces()
-	tr := otel.Tracer("partition-archival")
-
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("db pool: %w", err)
-	}
-	defer pool.Close()
-
-	go archival.Run(ctx, archival.NewArchiver(pool, gen.New(pool), cfg, tr, lg))
-
-	return service.Serve(ctx, lg, "partition-archival", cfg.AdminPort,
-		archival.AdminHandler(pool), cfg.ShutdownTimeout,
-		zap.Duration("interval", cfg.Interval))
+		health := httpx.NewRouter(httpx.Check{Name: "postgres", Ping: pool.Ping})
+		return service.Serve(ctx, lg, cfg.Port, health, func(ctx context.Context) {
+			archival.Run(ctx, cfg.Interval, lg, pool, cfg.Dir)
+		})
+	})
 }

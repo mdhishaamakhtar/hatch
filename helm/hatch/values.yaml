@@ -1,79 +1,50 @@
-# Default values for the Hatch chart. Each Hatch service has its own `enabled`
-# toggle so a service can be deployed or skipped independently.
+# `make up` installs this chart in three passes: the infrastructure alone, then
+# the jobs that migrate the database and create the topics, then the services.
+services:
+  enabled: true
+jobs:
+  enabled: true
+
+# Set by `make up-pods` to the tags `make build` gave each image.
+images:
+  api: hatch/api:dev
+  scheduler: hatch/scheduler:dev
+  delivery-worker: hatch/delivery-worker:dev
+  retry-consumer: hatch/retry-consumer:dev
+  reconciliation-cron: hatch/reconciliation-cron:dev
+  partition-archival: hatch/partition-archival:dev
 
 api:
-  enabled: true
-  image: hatch/api:dev
-  imagePullPolicy: Always
   replicas: 1
-  servicePort: 9021
-  serviceType: LoadBalancer
+  port: 9021
 
 scheduler:
-  enabled: true
-  image: hatch/scheduler:dev
-  imagePullPolicy: Always
   replicas: 2
-  adminPort: 9022
-  scheduleChannelBuffer: 100000
-  clearChannelBuffer: 64
-  wheelStorage:
-    size: 1Gi
+  port: 9022
+  wheelStorage: 1Gi
 
 deliveryWorker:
-  enabled: true
-  image: hatch/delivery-worker:dev
-  imagePullPolicy: Always
   replicas: 1
-  adminPort: 9023
-  batchSize: 1000
-  mock:
-    # Deterministic failure seam for the acceptance verifier: sends to this exact
-    # recipient always fail transiently, so the retry tiers + exhaustion path can
-    # be exercised end to end. Empty disables it; it never affects other traffic.
-    failRecipient: "fail@mock.test"
+  port: 9023
+  # Sends to this recipient always fail, which is how `make verify` drives a
+  # schedule through every retry tier.
+  failRecipient: fail@mock.test
 
-# Retry consumers: one Deployment running a drain goroutine per tier.
-# Stateless (Kafka only). Drain intervals default to the production 1m/5m/30m in
-# code (internal/retry/config.go); the values below override them to a few
-# seconds so `make verify` and demos on the dev cluster don't wait minutes for a
-# retry to flow through.
 retryConsumer:
-  enabled: true
-  image: hatch/retry-consumer:dev
-  imagePullPolicy: Always
   replicas: 1
-  adminPort: 9024
-  drainBatchSize: 1000
-  intervals:
-    tier1min: 2s
-    tier5min: 4s
-    tier30min: 8s
+  port: 9024
+  # Seconds instead of the default 1m,5m,30m, so retries come round quickly
+  # in development.
+  intervals: 2s,4s,8s
 
-# Reconciliation cron: a Deployment running a periodic sweep that
-# recovers schedule rows stranded by a crash and re-enqueues them onto
-# emails.due. The acceptance verifier drives recovery in-process, so the dev
-# interval is long (the cron stays dormant during `make verify`); its run-on-boot
-# sweep emits the last-run gauge the staleness alert watches.
+# The crons sweep when they start. `make verify` runs sweeps of its own, so
+# in development they need not sweep often.
 reconciliationCron:
-  enabled: true
-  image: hatch/reconciliation-cron:dev
-  imagePullPolicy: Always
-  replicas: 1
-  adminPort: 9025
+  port: 9025
   interval: 1h
 
-# Partition archival cron: a Deployment that detaches, exports (gzip
-# CSV), and drops fully-past, fully-terminal scheduled_emails partitions. The
-# verifier drives archival in-process over isolated test partitions, so the dev
-# interval is long; its run-on-boot sweep emits the active-partition and last-run
-# gauges. Exports are written to an emptyDir at /archive.
 partitionArchival:
-  enabled: true
-  image: hatch/partition-archival:dev
-  imagePullPolicy: Always
-  replicas: 1
-  adminPort: 9026
+  port: 9026
   interval: 1h
 
 postgres:
@@ -81,46 +52,29 @@ postgres:
   database: hatch
   user: hatch
   storage: 5Gi
-  servicePort: 5432
+  port: 5432
 
 redis:
   image: redis:7-alpine
   storage: 1Gi
-  servicePort: 6379
+  port: 6379
 
 kafka:
   image: apache/kafka:3.9.0
   storage: 5Gi
-  brokerPort: 9092
+  port: 9092
   controllerPort: 9093
   clusterID: 5L6g3nShT-eMCtK--X86sw
-  topicsJob:
-    enabled: true
-  # Topics provisioned by the post-install/post-upgrade Job. The delivery worker
-  # produces to the retry tiers on transient failure; the retry consumers
-  # drain them.
+  partitions: 12
   topics:
-    - name: emails.due
-      partitions: 12
-      replicationFactor: 1
-    - name: emails.retry.1min
-      partitions: 12
-      replicationFactor: 1
-    - name: emails.retry.5min
-      partitions: 12
-      replicationFactor: 1
-    - name: emails.retry.30min
-      partitions: 12
-      replicationFactor: 1
+    - emails.due
+    - emails.retry.1min
+    - emails.retry.5min
+    - emails.retry.30min
 
-# golang-migrate runs in-cluster as the db-migrate post-install/post-upgrade
-# hook (templates/migrations/job.yaml). The SQL is delivered via the
-# hatch-migrations ConfigMap built out-of-band by scripts/sync-migrations.sh.
 migrations:
-  enabled: true
   image: migrate/migrate:v4.18.3
 
-# Image used by the init containers that gate api/scheduler startup on
-# dependency reachability (postgres/redis/kafka). busybox ships `nc`.
-initWait:
-  image: busybox:1.36
+# The image of the init containers that hold a service back until its
+# dependencies accept connections. busybox has nc.
+waitImage: busybox:1.36

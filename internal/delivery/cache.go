@@ -6,156 +6,79 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/mdhishaamakhtar/hatch/pkg/db"
+	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/redis/rueidis"
 	"go.uber.org/zap"
 )
 
-// errCacheUnavailable means Redis could not be reached after retries. The
-// processor leaves the row `processing` so reconciliation re-enqueues it.
-var errCacheUnavailable = errors.New("client cache unavailable")
+// clientCacheTTL bounds how stale a cached client can get if an invalidation
+// from the API is ever lost.
+const clientCacheTTL = 5 * time.Minute
 
-// Transient Redis errors get up to redisAttempts (3) tries, spaced by redisBackoffs
-// (LLD: 3 attempts at 50/100/200ms). Shared by the cache and idempotency store.
-var redisBackoffs = []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond}
-
-const redisAttempts = 3
-
-// cachedProvider mirrors one active client_providers row. Credentials stays the
-// encrypted Tink envelope; the router decrypts it only when building a real
-// provider (mock ignores it entirely).
-type cachedProvider struct {
-	Vendor      string          `json:"vendor"`
-	Credentials json.RawMessage `json:"credentials"`
-}
-
-// clientInfo is the cached per-client snapshot the processor needs.
-type clientInfo struct {
-	IsActive  bool             `json:"is_active"`
+// client is what a send needs to know about the schedule's client.
+type client struct {
+	Active    bool             `json:"active"`
 	Providers []cachedProvider `json:"providers"`
 }
 
-// clientCache is the read-through Redis cache keyed `client:{uuid}` (the same
-// key the API invalidates on client/provider mutation).
+type cachedProvider struct {
+	Vendor      string `json:"vendor"`
+	Credentials []byte `json:"credentials"` // still sealed; see internal/crypto
+}
+
+// clientCache is a read-through cache of clients in Redis, under client:<id>.
+// The API deletes that key whenever a client or its providers change.
 type clientCache struct {
-	rc    rueidis.Client
-	store Store
-	ttl   time.Duration
-	lg    *zap.Logger
+	redis   rueidis.Client
+	queries *db.Queries
+	lg      *zap.Logger
 }
 
-func NewClientCache(rc rueidis.Client, store Store, ttl time.Duration, lg *zap.Logger) *clientCache {
-	return &clientCache{rc: rc, store: store, ttl: ttl, lg: lg}
-}
-
-// cacheKey reproduces internal/api.clientCacheKey for a client id in byte form.
-func cacheKey(clientID []byte) string {
-	if u, err := db.BytesToUUID(clientID); err == nil {
-		return "client:" + u.String()
+func (c *clientCache) lookup(ctx context.Context, clientID uuid.UUID) (client, error) {
+	key := "client:" + clientID.String()
+	raw, err := c.redis.Do(ctx, c.redis.B().Get().Key(key).Build()).AsBytes()
+	switch {
+	case err == nil:
+		var cl client
+		if json.Unmarshal(raw, &cl) == nil {
+			cacheLookups.WithLabelValues("hit").Inc()
+			return cl, nil
+		}
+		c.lg.Warn("unreadable client cache entry; reloading it", zap.String("key", key))
+	case !rueidis.IsRedisNil(err):
+		cacheLookups.WithLabelValues("unavailable").Inc()
+		return client{}, err
 	}
-	return "client:invalid"
-}
 
-// Get returns the client snapshot, populating Redis on a miss. A nil error with
-// a usable clientInfo is the only success; errCacheUnavailable means Redis was
-// unreachable, and any other error is a Postgres failure — both leave the row
-// untouched so it can be retried.
-func (c *clientCache) Get(ctx context.Context, clientID []byte) (clientInfo, error) {
-	key := cacheKey(clientID)
-
-	raw, found, err := c.redisGet(ctx, key)
+	cacheLookups.WithLabelValues("miss").Inc()
+	cl, err := c.load(ctx, clientID)
 	if err != nil {
-		mCacheOps.WithLabelValues("unavailable").Inc()
-		return clientInfo{}, errCacheUnavailable
+		return client{}, err
 	}
-	if found {
-		var info clientInfo
-		if jsonErr := json.Unmarshal(raw, &info); jsonErr == nil {
-			mCacheOps.WithLabelValues("hit").Inc()
-			return info, nil
-		}
-		c.lg.Warn("corrupt client cache value; reloading from Postgres", zap.String("key", key))
-	}
-
-	info, err := c.loadFromDB(ctx, clientID)
-	if err != nil {
-		return clientInfo{}, err
-	}
-	c.redisSet(ctx, key, info) // best-effort; a write failure just means the next read misses again
-	mCacheOps.WithLabelValues("miss").Inc()
-	return info, nil
-}
-
-// redisGet returns (value, found, err). A Redis Nil reply is found=false with a
-// nil error; connection errors are retried before surfacing.
-func (c *clientCache) redisGet(ctx context.Context, key string) ([]byte, bool, error) {
-	var lastErr error
-	for attempt := range redisAttempts {
-		if attempt > 0 && !sleep(ctx, redisBackoffs[attempt-1]) {
-			return nil, false, ctx.Err()
-		}
-		resp := c.rc.Do(ctx, c.rc.B().Get().Key(key).Build())
-		if err := resp.Error(); err != nil {
-			if rueidis.IsRedisNil(err) {
-				return nil, false, nil
-			}
-			lastErr = err
-			continue
-		}
-		b, err := resp.AsBytes()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return b, true, nil
-	}
-	return nil, false, lastErr
-}
-
-func (c *clientCache) redisSet(ctx context.Context, key string, info clientInfo) {
-	b, err := json.Marshal(info)
-	if err != nil {
-		return
-	}
-	cmd := c.rc.B().Set().Key(key).Value(rueidis.BinaryString(b)).
-		ExSeconds(int64(c.ttl.Seconds())).Build()
-	if err := c.rc.Do(ctx, cmd).Error(); err != nil {
+	raw, _ = json.Marshal(cl)
+	if err := c.redis.Do(ctx, c.redis.B().Set().Key(key).Value(rueidis.BinaryString(raw)).Ex(clientCacheTTL).Build()).Error(); err != nil {
 		c.lg.Warn("client cache write failed", zap.String("key", key), zap.Error(err))
 	}
+	return cl, nil
 }
 
-func (c *clientCache) loadFromDB(ctx context.Context, clientID []byte) (clientInfo, error) {
-	active, err := c.store.GetClientForDelivery(ctx, clientID)
+func (c *clientCache) load(ctx context.Context, clientID uuid.UUID) (client, error) {
+	active, err := c.queries.IsClientActive(ctx, clientID[:])
+	if errors.Is(err, pgx.ErrNoRows) {
+		return client{}, nil // an unknown client sends nothing, like a deleted one
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Unknown client → treat as inactive so the send is cancelled, not retried.
-			return clientInfo{IsActive: false}, nil
-		}
-		return clientInfo{}, err
+		return client{}, err
 	}
-	provs, err := c.store.ListClientActiveProviders(ctx, clientID)
+	rows, err := c.queries.ListActiveProviders(ctx, clientID[:])
 	if err != nil {
-		return clientInfo{}, err
+		return client{}, err
 	}
-	info := clientInfo{IsActive: active, Providers: make([]cachedProvider, 0, len(provs))}
-	for _, p := range provs {
-		info.Providers = append(info.Providers, cachedProvider{
-			Vendor:      p.Vendor,
-			Credentials: json.RawMessage(p.Credentials),
-		})
+	cl := client{Active: active}
+	for _, r := range rows {
+		cl.Providers = append(cl.Providers, cachedProvider{Vendor: r.Vendor, Credentials: r.Credentials})
 	}
-	return info, nil
-}
-
-// sleep waits d or returns false if ctx is cancelled first.
-func sleep(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
+	return cl, nil
 }

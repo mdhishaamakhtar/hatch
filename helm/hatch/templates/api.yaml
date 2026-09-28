@@ -1,0 +1,46 @@
+{{- if .Values.services.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: api}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/component: api}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: api}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.api.port | quote }}
+    spec:
+      initContainers:
+        {{- include "hatch.waitFor" (list . "postgres" "redis") | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ index .Values.images "api" }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: {{ .Values.api.port }}}
+          envFrom:
+            - secretRef: {name: hatch-secrets}
+          env:
+            - {name: PORT, value: {{ .Values.api.port | quote }}}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: api}
+spec:
+  type: LoadBalancer
+  selector: {app.kubernetes.io/component: api}
+  ports:
+    - {name: http, port: {{ .Values.api.port }}, targetPort: http}
+{{- end }}

@@ -1,15 +1,7 @@
-# Hatch alert rules. A PrometheusRule CR is auto-discovered by the
-# kube-prometheus-stack Prometheus (ruleSelectorNilUsesHelmValues: false in
-# values.yaml means the empty ruleSelector matches every rule), so these load
-# automatically on every `make up-obs`. Rules use only metrics that the
-# services actually emit today — the Observability doc's Postgres/Redis/Kafka
-# exporter alerts are omitted because those exporters are not deployed.
-#
-# Prometheus annotation templating (the $value / $labels expressions) is wrapped
-# in Helm raw-string literals so Helm passes it through to Prometheus verbatim.
-#
-# The `release` label keeps the rules selectable even if the selector is ever
-# tightened back to the chart default.
+# Hatch's alerts. Prometheus picks up every PrometheusRule (see
+# ruleSelectorNilUsesHelmValues in values.yaml). Descriptions that use
+# Prometheus's own templating are wrapped in Helm raw strings, so Helm leaves
+# them alone.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -100,13 +92,13 @@ spec:
     - name: hatch-api
       rules:
         - alert: HatchClientRateLimitingSustained
-          expr: sum by (client_id) (rate(hatch_api_rate_limited_total[10m])) > 0
+          expr: sum(rate(hatch_api_rate_limited_total[10m])) > 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: "{{`Client {{ $labels.client_id }} sustained rate limiting`}}"
-            description: "{{`client_id {{ $labels.client_id }} has been rate-limited (429s) continuously for 10m — misconfigured or under attack.`}}"
+            summary: "API requests rate limited for 10m"
+            description: "Some client has been rate limited (429s) continuously for 10m: misconfigured, or abusive. The API's \"rate limited\" log lines name it."
 
     - name: hatch-crons
       rules:
@@ -128,11 +120,11 @@ spec:
             summary: "Partition archival cron has not run in >35d"
             description: "{{`Last successful archival run was {{ $value | humanizeDuration }} ago — old partitions may be accumulating.`}}"
 
-        - alert: HatchPartitionCountOutOfRange
-          expr: max(hatch_db_active_partitions) < 2 or max(hatch_db_active_partitions) > 6
+        - alert: HatchPartitionRunwayShort
+          expr: max(hatch_db_active_partitions) < 121
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: "scheduled_emails active partition count out of range"
-            description: "{{`Active partition count is {{ $value }} (expected 2–6) — archival or partition management may be off.`}}"
+            summary: "Fewer than ten years of scheduled_emails partitions left"
+            description: "{{`Only {{ $value }} partitions remain. The API accepts schedules up to ten years out, and an insert past the last partition fails.`}}"

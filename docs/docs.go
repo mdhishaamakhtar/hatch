@@ -34,12 +34,12 @@ const docTemplate = `{
                 "summary": "Create a client",
                 "parameters": [
                     {
-                        "description": "client config",
+                        "description": "The client",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_api.createClientRequest"
+                            "$ref": "#/definitions/createClientRequest"
                         }
                     }
                 ],
@@ -47,19 +47,19 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.createClientResponse"
+                            "$ref": "#/definitions/createClientResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -72,9 +72,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
                     "admin"
                 ],
@@ -82,7 +79,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "client UUID",
+                        "description": "Client id",
                         "name": "client_id",
                         "in": "path",
                         "required": true
@@ -95,13 +92,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -123,22 +120,22 @@ const docTemplate = `{
                 "tags": [
                     "admin"
                 ],
-                "summary": "Upsert a client provider",
+                "summary": "Register a client's provider",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "client UUID",
+                        "description": "Client id",
                         "name": "client_id",
                         "in": "path",
                         "required": true
                     },
                     {
-                        "description": "vendor + credentials",
+                        "description": "Vendor and credentials, such as an api_key for resend",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_api.upsertProviderRequest"
+                            "$ref": "#/definitions/upsertProviderRequest"
                         }
                     }
                 ],
@@ -146,19 +143,25 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.upsertProviderResponse"
+                            "$ref": "#/definitions/upsertProviderResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -171,24 +174,25 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
                     "admin"
                 ],
-                "summary": "Delete a client provider",
+                "summary": "Delete a client's provider",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "client UUID",
+                        "description": "Client id",
                         "name": "client_id",
                         "in": "path",
                         "required": true
                     },
                     {
+                        "enum": [
+                            "mock",
+                            "resend"
+                        ],
                         "type": "string",
-                        "description": "vendor (resend|ses|sendgrid|smtp)",
+                        "description": "Vendor",
                         "name": "vendor",
                         "in": "path",
                         "required": true
@@ -201,13 +205,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -232,56 +236,56 @@ const docTemplate = `{
                 "summary": "Schedule an email",
                 "parameters": [
                     {
-                        "description": "schedule payload",
+                        "description": "The email and when to send it",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_api.createScheduleRequest"
+                            "$ref": "#/definitions/createScheduleRequest"
                         }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "idempotent replay",
+                        "description": "Idempotent replay",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.scheduleResponse"
+                            "$ref": "#/definitions/scheduleResponse"
                         }
                     },
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.scheduleResponse"
+                            "$ref": "#/definitions/scheduleResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "413": {
                         "description": "Request Entity Too Large",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "415": {
                         "description": "Unsupported Media Type",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "429": {
                         "description": "Too Many Requests",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -304,7 +308,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "schedule UUID",
+                        "description": "Schedule id",
                         "name": "schedule_id",
                         "in": "path",
                         "required": true
@@ -314,25 +318,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.scheduleFullResponse"
+                            "$ref": "#/definitions/scheduleDetail"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -353,7 +357,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "schedule UUID",
+                        "description": "Schedule id",
                         "name": "schedule_id",
                         "in": "path",
                         "required": true
@@ -366,25 +370,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     },
                     "409": {
-                        "description": "Conflict",
+                        "description": "Already delivered, failed or cancelled",
                         "schema": {
-                            "$ref": "#/definitions/internal_api.apiError"
+                            "$ref": "#/definitions/ErrorBody"
                         }
                     }
                 }
@@ -392,7 +396,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "internal_api.apiError": {
+        "ErrorBody": {
             "type": "object",
             "properties": {
                 "error": {
@@ -403,10 +407,11 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.createClientRequest": {
+        "createClientRequest": {
             "type": "object",
             "properties": {
                 "max_rps": {
+                    "description": "defaults to 100",
                     "type": "integer"
                 },
                 "name": {
@@ -414,7 +419,7 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.createClientResponse": {
+        "createClientResponse": {
             "type": "object",
             "properties": {
                 "api_key": {
@@ -431,13 +436,14 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.createScheduleRequest": {
+        "createScheduleRequest": {
             "type": "object",
             "properties": {
                 "body": {
                     "type": "string"
                 },
                 "deliver_at": {
+                    "description": "Unix milliseconds",
                     "type": "integer"
                 },
                 "from_email": {
@@ -463,7 +469,7 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.scheduleFullResponse": {
+        "scheduleDetail": {
             "type": "object",
             "properties": {
                 "body": {
@@ -516,7 +522,7 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.scheduleResponse": {
+        "scheduleResponse": {
             "type": "object",
             "properties": {
                 "deliver_at": {
@@ -530,21 +536,22 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_api.upsertProviderRequest": {
+        "upsertProviderRequest": {
             "type": "object",
             "properties": {
                 "credentials": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "type": "object"
                 },
                 "vendor": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                        "mock",
+                        "resend"
+                    ]
                 }
             }
         },
-        "internal_api.upsertProviderResponse": {
+        "upsertProviderResponse": {
             "type": "object",
             "properties": {
                 "client_id": {
@@ -564,7 +571,7 @@ const docTemplate = `{
     },
     "securityDefinitions": {
         "BearerAuth": {
-            "description": "\"Bearer \u003capi_key\u003e\" — client key for /v1/*, admin key for /admin/*.",
+            "description": "\"Bearer \u003capi_key\u003e\": a client's key for /v1, the admin key for /admin.",
             "type": "apiKey",
             "name": "Authorization",
             "in": "header"
@@ -579,7 +586,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{"http"},
 	Title:            "Hatch Scheduler API",
-	Description:      "Schedule emails for future delivery. Admin endpoints provision\nclients and per-vendor provider credentials.",
+	Description:      "Schedule emails for future delivery. Admin endpoints provision clients and their providers' credentials.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

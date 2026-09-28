@@ -3,12 +3,15 @@ package bench
 import (
 	"context"
 	"fmt"
+	"maps"
+	"math"
+	"slices"
 	"strings"
 	"time"
 )
 
-// Result is one scenario's full record: what was run, what happened, and enough
-// environment detail to make the numbers reproducible.
+// Result is one run's full record: what ran, what happened, and enough about
+// the environment to reproduce it.
 type Result struct {
 	Scenario  string    `json:"scenario"`
 	Label     string    `json:"label,omitempty"`
@@ -29,24 +32,19 @@ type Result struct {
 	Checks   []Check            `json:"integrity_checks,omitempty"`
 	Notes    []string           `json:"notes,omitempty"`
 	Warnings []string           `json:"warnings,omitempty"`
-
-	window time.Duration // run span, used for the Prometheus lookback
 }
 
-// drainSummary is how long the pipeline took to settle and what it settled to.
-type drainSummary struct {
-	Waited          string  `json:"waited"`
-	TimedOut        bool    `json:"timed_out"`
-	DeliveredPerSec float64 `json:"delivered_per_sec"`
-	WorkerWindow    string  `json:"worker_window"`
+// Quantiles are how late sends went out, in seconds past deliver_at.
+type Quantiles struct {
+	P50     float64 `json:"p50"`
+	P95     float64 `json:"p95"`
+	P99     float64 `json:"p99"`
+	Present bool    `json:"present"`
 }
 
-// Check is one integrity assertion about a run. These are deliberately not
-// latency targets: a number this project "should" hit would be invented, and a
-// benchmark that grades itself against an invented number measures nothing.
-// What a check asserts instead is that the run was valid — every schedule
-// reached a terminal state, nothing was stranded — so the latency and
-// throughput figures beside it can be read at face value.
+// A Check asserts the run was valid, so its numbers can be taken at face
+// value: every schedule finished, none was lost. There are deliberately no
+// performance targets: a number the system "should" hit would be invented.
 type Check struct {
 	Name     string `json:"name"`
 	Expected string `json:"expected"`
@@ -57,207 +55,146 @@ type Check struct {
 func newResult(scenario string, r *Runner) *Result {
 	return &Result{
 		Scenario:  scenario,
-		Label:     r.Opts.Label,
+		Label:     r.cfg.Label,
 		StartedAt: time.Now(),
 		GitCommit: r.cfg.GitCommit,
-		Replicas:  r.cfg.ReplicaCounts(),
-		ClientID:  r.client.ID,
+		Replicas:  r.cfg.Replicas,
+		ClientID:  r.client.String(),
 		Metrics:   map[string]float64{},
 	}
 }
 
 func (res *Result) finish() {
 	res.EndedAt = time.Now()
-	res.window = res.EndedAt.Sub(res.StartedAt)
-	res.Duration = res.window.Round(time.Millisecond).String()
+	res.Duration = res.EndedAt.Sub(res.StartedAt).Round(time.Millisecond).String()
 }
 
-// Note records a human-readable fact about how the run was conducted.
+// Note records a fact about how the run was conducted.
 func (res *Result) Note(format string, args ...any) {
 	res.Notes = append(res.Notes, fmt.Sprintf(format, args...))
 }
 
-// awaitDrain waits for the pipeline to settle and records how it went.
-func (res *Result) awaitDrain(ctx context.Context, r *Runner, expect int) error {
-	fmt.Printf("  waiting for %d schedules to reach a terminal state…\n", expect)
-	last := ""
-	state, err := r.obs.waitForDrain(ctx, expect, r.cfg.DrainTimeout, 2*time.Second, func(s drainState) {
-		if line := s.Counts.String(); line != last {
-			fmt.Printf("    [%5s] %s\n", s.Waited.Round(time.Second), line)
-			last = line
-		}
-	})
-	if err != nil {
-		return err
-	}
-
-	counts := state.Counts
-	res.Counts = &counts
-	summary := &drainSummary{
-		Waited:   state.Waited.Round(time.Millisecond).String(),
-		TimedOut: state.TimedOut,
-	}
-	if state.TimedOut {
-		res.Warnings = append(res.Warnings,
-			fmt.Sprintf("drain timed out after %s with %d row(s) still in flight",
-				summary.Waited, counts.InFlight()))
-	}
-
-	// Throughput from the rows' own timestamps: the span between the first and
-	// last terminal write is the workers' actual working window, which excludes
-	// however long the load phase and the wait for maturity took.
-	first, lastT, n, err := r.obs.deliveryWindow(ctx)
-	if err != nil {
-		return err
-	}
-	if span := lastT.Sub(first); span > 0 && n > 1 {
-		summary.DeliveredPerSec = float64(n) / span.Seconds()
-		summary.WorkerWindow = span.Round(time.Millisecond).String()
-
-		// A throughput number is only the pipeline's if the pipeline was what
-		// paced it. When schedules mature over a span, the observed window can
-		// never be shorter than that span, so a fast pipeline silently reports
-		// Count/spread — its load shape, not its capacity. Refuse to let that
-		// pass as a result.
-		//
-		// Only the stage-ceiling scenario is held to this. e2e deliberately
-		// spreads its load to imitate real arrivals and is judged on latency, so
-		// a spread-bounded window there is the intended shape, not a mistake.
-		if spread := r.Opts.Spread; res.Scenario == "delivery" && spread > 0 && span < 2*spread {
-			res.Warnings = append(res.Warnings, fmt.Sprintf(
-				"THROUGHPUT NOT VALID: the %s worker window is within 2x the %s deliver_at spread, "+
-					"so this rate is bounded by how fast schedules matured, not by the workers. "+
-					"Re-run with --spread 0 to measure the stage ceiling.",
-				summary.WorkerWindow, spread))
-		}
-	}
-	if r.obs.peakConns > 0 {
-		res.Metrics["postgres_connections_peak"] = float64(r.obs.peakConns)
-		res.Metrics["postgres_connections_max"] = float64(r.obs.maxConns)
-	}
-	res.Drain = summary
-	return nil
-}
-
-// collectDeliveryMetrics reads the delivery-side numbers out of Prometheus.
-func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) error {
-	// The query runs MetricsSettle after the run ended, and Prometheus looks
-	// back from now — so the window must span the run plus that wait, or the
-	// earliest part of the run falls outside it.
-	window := res.window + r.cfg.MetricsSettle + 30*time.Second
-
-	q, err := r.prom.e2eQuantiles(ctx, window)
-	if err != nil {
-		return fmt.Errorf("e2e quantiles: %w", err)
-	}
-	if q.Present {
-		res.E2E = &q
-	} else {
-		res.Warnings = append(res.Warnings,
-			"no e2e latency observations in the window — the histogram was not scraped or nothing was delivered")
-	}
-
-	// The scheduler's produce count is recorded on every delivery run on
-	// purpose. A stage-ceiling run puts every schedule in one wheel slot, so the
-	// scheduler has to push them all on a single tick — if it cannot, the
-	// observed "delivery" rate is really the scheduler's, and the only way to
-	// notice is to have its numbers side by side.
-	for name, metric := range map[string]string{
-		"scheduler_produced_total": "hatch_scheduler_kafka_produce_duration_seconds_count",
-		"sends_total":              "hatch_delivery_sends_total",
-		"retries_total":            "hatch_delivery_retries_total",
-		"failed_total":             "hatch_delivery_failed_total",
-		"idempotency_ops":          "hatch_delivery_idempotency_total",
-	} {
-		if v, ok, err := r.prom.counterIncrease(ctx, metric, window); err == nil && ok {
-			res.Metrics[name] = v
-		}
-	}
-	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_delivery_provider_send_duration_seconds", 0.95, window); err == nil && ok {
-		res.Metrics["provider_send_p95_seconds"] = v
-	}
-	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_delivery_batch_duration_seconds", 0.95, window); err == nil && ok {
-		res.Metrics["batch_duration_p95_seconds"] = v
-	}
-	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_scheduler_kafka_produce_duration_seconds", 0.95, window); err == nil && ok {
-		res.Metrics["scheduler_produce_p95_seconds"] = v
-	}
-	return nil
-}
-
-// checkLoadHealth surfaces load that never landed. A run with a healthy
-// Created count can still be missing a chunk of its intended load, and a
-// throughput or latency figure drawn from a partial, silently-truncated
-// population is not the figure it claims to be.
-func (res *Result) checkLoadHealth() {
+// checkLoad warns about load that never landed: a rate or latency drawn from
+// part of the intended load is not the figure it claims to be.
+func (res *Result) checkLoad() {
 	l := res.Load
-	if l == nil {
-		return
-	}
 	if n := l.OtherStatus[400]; n > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf(
-			"%d of %d creates were rejected 400 — most often deliver_at falling inside "+
-				"API_MIN_SCHEDULE_HORIZON because the load phase ran long. "+
-				"Only the %d accepted schedules are represented below.",
+			"%d of %d creates were rejected with 400, most often because the load ran long enough for deliver_at "+
+				"to fall inside API_MIN_SCHEDULE_HORIZON. Only the %d accepted schedules are measured.",
 			n, l.Attempted, l.Created))
 	}
 	if l.Errors > 0 {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("%d transport errors during load", l.Errors))
+		res.Warnings = append(res.Warnings, fmt.Sprintf("%d transport errors during the load", l.Errors))
 	}
 	if l.RateLimited > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf(
-			"%d creates were rate limited — the per-client max_rps bound this run, not the server", l.RateLimited))
+			"%d creates were rate limited: the client's max_rps bounded this run, not the API", l.RateLimited))
 	}
 }
 
-// collectAPIMetrics reads the server's own view of the ingest path, which is
-// worth having next to the client-side numbers: a gap between them is queueing
-// the handler's histogram cannot see.
-func (res *Result) collectAPIMetrics(ctx context.Context, r *Runner) error {
-	window := res.window + r.cfg.MetricsSettle + 30*time.Second
-	if v, ok, err := r.prom.histogramQuantile(ctx, "hatch_api_request_duration_seconds", 0.95, window); err == nil && ok {
+// promWindow is how far back a query has to look, from now, to cover the whole
+// run.
+func (res *Result) promWindow() string {
+	return fmt.Sprintf("%ds", int((time.Since(res.StartedAt) + 30*time.Second).Seconds()))
+}
+
+// scalar runs a PromQL query for a single value. It reports no value, rather
+// than zero, when the query returns nothing or NaN, which is what a quantile
+// over a window without observations returns.
+func (r *Runner) scalar(ctx context.Context, expr string) (float64, bool) {
+	values, err := r.Query(ctx, expr)
+	if err != nil || len(values) == 0 || math.IsNaN(values[0]) || math.IsInf(values[0], 0) {
+		return 0, false
+	}
+	return values[0], true
+}
+
+func (r *Runner) quantile(ctx context.Context, histogram string, q float64, window string) (float64, bool) {
+	return r.scalar(ctx, fmt.Sprintf(`histogram_quantile(%g, sum by (le) (rate(%s_bucket[%s])))`, q, histogram, window))
+}
+
+func (r *Runner) increase(ctx context.Context, counter string, window string) (float64, bool) {
+	return r.scalar(ctx, fmt.Sprintf(`sum(increase(%s[%s]))`, counter, window))
+}
+
+// collectDeliveryMetrics reads the delivery side of the run from Prometheus.
+func (res *Result) collectDeliveryMetrics(ctx context.Context, r *Runner) {
+	window := res.promWindow()
+	var q Quantiles
+	q.P50, q.Present = r.quantile(ctx, "hatch_delivery_e2e_latency_seconds", 0.50, window)
+	q.P95, _ = r.quantile(ctx, "hatch_delivery_e2e_latency_seconds", 0.95, window)
+	q.P99, _ = r.quantile(ctx, "hatch_delivery_e2e_latency_seconds", 0.99, window)
+	if q.Present {
+		res.E2E = &q
+	} else {
+		res.Warnings = append(res.Warnings, "no lateness observations in the window: nothing was delivered, or it was not scraped")
+	}
+
+	// The scheduler's numbers are recorded beside the workers' because a
+	// ceiling run puts every schedule in one wheel slot: if the scheduler
+	// cannot fire them all on one tick, the delivery rate is really its rate.
+	for name, counter := range map[string]string{
+		"scheduler_fired_total": "hatch_scheduler_fired_total",
+		"sends_total":           "hatch_delivery_sends_total",
+		"retries_total":         "hatch_delivery_retries_total",
+		"failed_total":          "hatch_delivery_failed_total",
+		"idempotency_ops":       "hatch_delivery_idempotency_total",
+	} {
+		if v, ok := r.increase(ctx, counter, window); ok {
+			res.Metrics[name] = v
+		}
+	}
+	for name, histogram := range map[string]string{
+		"provider_send_p95_seconds":     "hatch_delivery_provider_send_duration_seconds",
+		"batch_duration_p95_seconds":    "hatch_delivery_batch_duration_seconds",
+		"scheduler_produce_p95_seconds": "hatch_scheduler_kafka_produce_duration_seconds",
+	} {
+		if v, ok := r.quantile(ctx, histogram, 0.95, window); ok {
+			res.Metrics[name] = v
+		}
+	}
+}
+
+// collectAPIMetrics reads the API's own view of the load, to set beside the
+// harness's.
+func (res *Result) collectAPIMetrics(ctx context.Context, r *Runner) {
+	window := res.promWindow()
+	if v, ok := r.quantile(ctx, "hatch_api_request_duration_seconds", 0.95, window); ok {
 		res.Metrics["api_request_p95_seconds"] = v
 	}
-	if v, ok, err := r.prom.counterIncrease(ctx, "hatch_api_requests_total", window); err == nil && ok {
+	if v, ok := r.increase(ctx, "hatch_api_requests_total", window); ok {
 		res.Metrics["api_requests_total"] = v
 	}
-	if v, ok, err := r.prom.counterIncrease(ctx, "hatch_api_rate_limited_total", window); err == nil && ok {
+	if v, ok := r.increase(ctx, "hatch_api_rate_limited_total", window); ok {
 		res.Metrics["api_rate_limited_total"] = v
 	}
-	return nil
 }
 
-// checkIntegrity records whether the run itself was sound. A failing check
-// invalidates the run's numbers; it does not mean the system underperformed.
+// checkIntegrity records whether the run was sound. A failed check means the
+// numbers cannot be trusted, not that the system was slow.
 func (res *Result) checkIntegrity() {
 	if res.Counts != nil {
-		res.Checks = append(res.Checks, Check{
-			Name:     "no stranded rows",
-			Expected: "0 in flight",
-			Actual:   fmt.Sprintf("%d", res.Counts.InFlight()),
-			Pass:     res.Counts.InFlight() == 0,
-		})
-		if res.Load != nil {
-			accounted := res.Counts.Total() == res.Load.Created
-			res.Checks = append(res.Checks, Check{
+		res.Checks = append(res.Checks,
+			Check{
+				Name:     "no schedules left in flight",
+				Expected: "0",
+				Actual:   fmt.Sprint(res.Counts.InFlight()),
+				Pass:     res.Counts.InFlight() == 0,
+			},
+			Check{
 				Name:     "every schedule accounted for",
 				Expected: fmt.Sprintf("%d rows", res.Load.Created),
 				Actual:   fmt.Sprintf("%d rows", res.Counts.Total()),
-				Pass:     accounted,
+				Pass:     res.Counts.Total() == res.Load.Created,
 			})
-		}
 	}
-	if res.E2E != nil && !res.E2E.Present {
-		res.Checks = append(res.Checks, Check{
-			Name:     "lateness histogram populated",
-			Expected: "present",
-			Actual:   "no data",
-			Pass:     false,
-		})
+	if res.Scenario == "e2e" && res.E2E == nil {
+		res.Checks = append(res.Checks, Check{Name: "lateness histogram populated", Expected: "present", Actual: "no data"})
 	}
 }
 
-// Markdown renders the human-readable report.
+// Markdown renders the result as a report.
 func (res *Result) Markdown() string {
 	var b strings.Builder
 	p := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
@@ -282,11 +219,11 @@ func (res *Result) Markdown() string {
 		p("| Metric | Value |")
 		p("|---|---|")
 		p("| Attempted | %d |", l.Attempted)
-		p("| Created (2xx) | %d |", l.Created)
+		p("| Created (201) | %d |", l.Created)
 		p("| Rate limited (429) | %d |", l.RateLimited)
 		p("| Transport errors | %d |", l.Errors)
-		for code, n := range l.OtherStatus {
-			p("| HTTP %d | %d |", code, n)
+		for _, code := range slices.Sorted(maps.Keys(l.OtherStatus)) {
+			p("| HTTP %d | %d |", code, l.OtherStatus[code])
 		}
 		p("| Wall time | %s |", l.Duration.Round(time.Millisecond))
 		p("| **Achieved RPS** | **%.1f** |", l.AchievedRPS)
@@ -300,7 +237,7 @@ func (res *Result) Markdown() string {
 		p("\n## Delivery\n")
 		p("| Metric | Value |")
 		p("|---|---|")
-		p("| Time to settle | %s |", d.Waited)
+		p("| Time to finish | %s |", d.Waited)
 		p("| Timed out | %t |", d.TimedOut)
 		if d.WorkerWindow != "" {
 			p("| Worker window | %s |", d.WorkerWindow)
@@ -312,19 +249,19 @@ func (res *Result) Markdown() string {
 	}
 
 	if q := res.E2E; q != nil {
-		p("\n## End-to-end latency (deliver_at → delivered)\n")
+		p("\n## Lateness (deliver_at → delivered)\n")
 		p("| Quantile | Value |")
 		p("|---|---|")
-		p("| p50 | %s |", time.Duration(q.P50*float64(time.Second)).Round(time.Millisecond))
-		p("| p95 | %s |", time.Duration(q.P95*float64(time.Second)).Round(time.Millisecond))
-		p("| p99 | %s |", time.Duration(q.P99*float64(time.Second)).Round(time.Millisecond))
+		p("| p50 | %s |", seconds(q.P50))
+		p("| p95 | %s |", seconds(q.P95))
+		p("| p99 | %s |", seconds(q.P99))
 	}
 
 	if len(res.Metrics) > 0 {
 		p("\n## Prometheus\n")
 		p("| Metric | Value |")
 		p("|---|---|")
-		for _, k := range sortedKeys(res.Metrics) {
+		for _, k := range slices.Sorted(maps.Keys(res.Metrics)) {
 			p("| %s | %.3f |", k, res.Metrics[k])
 		}
 	}
@@ -333,12 +270,12 @@ func (res *Result) Markdown() string {
 		p("\n## Run integrity\n")
 		p("| Check | Expected | Actual | |")
 		p("|---|---|---|---|")
-		for _, v := range res.Checks {
+		for _, c := range res.Checks {
 			mark := "FAIL"
-			if v.Pass {
+			if c.Pass {
 				mark = "PASS"
 			}
-			p("| %s | %s | %s | %s |", v.Name, v.Expected, v.Actual, mark)
+			p("| %s | %s | %s | %s |", c.Name, c.Expected, c.Actual, mark)
 		}
 	}
 
@@ -357,17 +294,7 @@ func (res *Result) Markdown() string {
 	return b.String()
 }
 
-func sortedKeys(m map[string]float64) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	for i := range out {
-		for j := i + 1; j < len(out); j++ {
-			if out[j] < out[i] {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
-	return out
+// seconds renders a number of seconds as a duration.
+func seconds(s float64) string {
+	return time.Duration(s * float64(time.Second)).Round(time.Millisecond).String()
 }

@@ -1,11 +1,6 @@
-# In-cluster benchmark runner. One Job per sweep point, so a run reaches
-# Postgres, Prometheus, the API and each scheduler pod over ClusterDNS and never
-# depends on a host port-forward — a benchmark lasts tens of minutes and a
-# dropped forward would cost the whole run.
-#
-# Applied by scripts/bench.sh with ${BENCH_*} substituted per point. envFrom
-# pulls ADMIN_API_KEY / DATABASE_URL / KAFKA_BROKERS from the same Secret the
-# services use.
+# One benchmark run, applied by scripts/bench.sh with the ${...} filled in.
+# It runs in the cluster so a run lasting tens of minutes never depends on a
+# port-forward staying up.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -42,8 +37,8 @@ spec:
               value: "${BENCH_SPREAD}"
             - name: BENCH_LABEL
               value: "${BENCH_LABEL}"
-            - name: BENCH_SCHEDULER_REPLICAS
-              value: "${BENCH_SCHEDULER_REPLICAS}"
+            - name: SCHEDULER_REPLICAS
+              value: "${SCHEDULER_REPLICAS}"
             - name: BENCH_SCHEDULE_LEAD
               value: "${BENCH_SCHEDULE_LEAD}"
             - name: BENCH_GIT_COMMIT

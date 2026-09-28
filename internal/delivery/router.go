@@ -3,297 +3,172 @@ package delivery
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"strings"
+	"errors"
 	"sync"
 	"time"
 
-	"github.com/mdhishaamakhtar/hatch/pkg/crypto"
-	"github.com/mdhishaamakhtar/hatch/pkg/provider"
+	"github.com/google/uuid"
+	"github.com/mdhishaamakhtar/hatch/internal/crypto"
+	"github.com/mdhishaamakhtar/hatch/internal/provider"
 	"github.com/sony/gobreaker/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/time/rate"
 )
 
-// tokenBucket is a leaky bucket with an inspectable integer token count. G3
-// refills it each tick; the selection algorithm reads the count and consumes a
-// token. Not goroutine-safe on its own — the Router's RWMutex guards every access.
-type tokenBucket struct {
-	tokens   int
-	capacity int
-	refill   int
+// Why the router could not send. errBreakerOpen and errNoCapacity are
+// transient; their messages double as metric labels.
+var (
+	errNoProvider  = errors.New("no_active_providers")
+	errBreakerOpen = errors.New("provider_breaker_open")
+	errNoCapacity  = errors.New("provider_no_capacity")
+)
+
+// router spreads a client's sends across its providers, shielding each
+// (client, vendor) pair behind a rate limit and a circuit breaker.
+type router struct {
+	mu     sync.Mutex
+	routes map[routeKey]*route
+
+	// newProvider builds a client's provider from its sealed credentials.
+	newProvider func(clientID uuid.UUID, vendor string, sealed []byte) (provider.Provider, error)
+	limit       rate.Limit // sends per second per route
+	breaker     gobreaker.Settings
 }
 
-func (b *tokenBucket) topUp() {
-	b.tokens += b.refill
-	if b.tokens > b.capacity {
-		b.tokens = b.capacity
-	}
+type routeKey struct {
+	client uuid.UUID
+	vendor string
 }
 
-func (b *tokenBucket) take() bool {
-	if b.tokens > 0 {
-		b.tokens--
-		return true
-	}
-	return false
-}
-
-// vendorState is the per-(client, vendor) routing state: a lazily-built provider
-// (rebuilt if the client's credentials change), a circuit breaker, and a leaky
-// bucket. Breaker and bucket persist across credential rotations.
-type vendorState struct {
+// A route is one client's use of one vendor.
+type route struct {
+	limiter  *rate.Limiter
+	breaker  *gobreaker.CircuitBreaker[struct{}]
 	provider provider.Provider
-	credsRaw []byte
-	breaker  *gobreaker.CircuitBreaker[any]
-	bucket   *tokenBucket
+	sealed   []byte // the credentials provider was built from
 }
 
-// Router selects a provider per send and shields each provider behind a circuit
-// breaker + leaky bucket. State is keyed by (client_id, vendor).
-type Router struct {
-	mu        sync.RWMutex
-	factories map[string]provider.Factory
-	cipher    *crypto.Cipher
-	states    map[string]*vendorState
-
-	capacity int
-	refill   int
-
-	breakerMinReqs uint32
-	breakerRatio   float64
-	breakerTimeout time.Duration
-}
-
-// NewRouter builds a router with the given vendor factories and tuning. capacity
-// is the leaky-bucket size, refill is the tokens added per G3 tick.
-func NewRouter(
-	factories map[string]provider.Factory,
-	cipher *crypto.Cipher,
-	capacity, refill int,
-	breakerMinReqs uint32,
-	breakerRatio float64,
-	breakerOpenTimeout time.Duration,
-) *Router {
-	return &Router{
-		factories:      factories,
-		cipher:         cipher,
-		states:         make(map[string]*vendorState),
-		capacity:       capacity,
-		refill:         refill,
-		breakerMinReqs: breakerMinReqs,
-		breakerRatio:   breakerRatio,
-		breakerTimeout: breakerOpenTimeout,
-	}
-}
-
-// stateKeySep joins client id and vendor into a states map key. Neither part
-// can contain it: client ids are UUIDs and vendors come from a fixed allowlist.
-const stateKeySep = '|'
-
-func stateKey(clientID, vendor string) string {
-	return clientID + string(stateKeySep) + vendor
-}
-
-// Refill tops up every bucket. Called by G3 on each tick.
-func (r *Router) Refill() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for k, st := range r.states {
-		st.bucket.topUp()
-		mBucketTokens.WithLabelValues(vendorOf(k)).Set(float64(st.bucket.tokens))
-	}
-}
-
-// Selection is the outcome of a Select call. Outcome tells the processor which
-// of three very different situations it is in; Vendor and Creds are only set
-// when Outcome is SelectOK.
-type Selection struct {
-	Outcome SelectOutcome
-	Vendor  string
-	Creds   []byte
-}
-
-// SelectOutcome distinguishes the reasons a send may not proceed. They demand
-// opposite responses, so collapsing them into a single bool is what turns a
-// vendor blip or a burst of traffic into a permanently failed email.
-type SelectOutcome int
-
-const (
-	// SelectOK — a vendor was chosen and a token consumed.
-	SelectOK SelectOutcome = iota
-	// SelectNoEligibleVendor — the client has no provider with a registered
-	// implementation. A configuration problem, and genuinely terminal.
-	SelectNoEligibleVendor
-	// SelectBreakerOpen — every candidate's circuit breaker is OPEN. A transient
-	// vendor outage: route to the retry tiers, don't fail the email.
-	SelectBreakerOpen
-	// SelectNoCapacity — candidates exist and are healthy, but their leaky
-	// buckets are empty. Pure backpressure: wait for a refill and reselect.
-	SelectNoCapacity
-)
-
-// Select runs the LLD selection algorithm and consumes one token from the chosen
-// vendor's bucket.
-//
-// last_provider exclusion is best-effort: it avoids immediately re-hitting the
-// vendor that just failed *when an alternative exists*. If excluding it would
-// leave no candidate — i.e. it's the client's only eligible provider — the
-// exclusion is dropped and we retry on it anyway. The retry tiers exist to
-// reattempt transient failures, so a single-provider client must not be stranded
-// with no_active_providers after one transient blip; a genuinely unhealthy sole
-// provider still trips its breaker and yields SelectBreakerOpen.
-func (r *Router) Select(clientID string, providers []cachedProvider, lastProvider string) Selection {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// First pass: prefer any healthy vendor other than the one that just failed.
-	pick := r.pickBestLocked(clientID, providers, lastProvider)
-	if pick.state == nil && lastProvider != "" {
-		// The just-failed vendor is the only eligible option — retry on it rather
-		// than failing the send for lack of an alternative.
-		pick = r.pickBestLocked(clientID, providers, "")
-	}
-	switch {
-	case pick.state == nil:
-		return Selection{Outcome: pick.emptyOutcome()}
-	case !pick.state.bucket.take():
-		return Selection{Outcome: SelectNoCapacity}
-	}
-	mBucketTokens.WithLabelValues(pick.vendor).Set(float64(pick.state.bucket.tokens))
-	return Selection{Outcome: SelectOK, Vendor: pick.vendor, Creds: pick.creds}
-}
-
-// pick is pickBestLocked's result: the winning vendor (state nil if none), plus
-// enough detail to say *why* nothing won.
-type pick struct {
-	vendor       string
-	creds        []byte
-	state        *vendorState
-	sawCandidate bool // a vendor with a registered implementation existed
-	sawOpen      bool // at least one such vendor was skipped for an OPEN breaker
-}
-
-// emptyOutcome classifies a pick that found no vendor.
-func (p pick) emptyOutcome() SelectOutcome {
-	switch {
-	case p.sawOpen:
-		return SelectBreakerOpen
-	case p.sawCandidate:
-		// Candidates existed and were closed, so the only way none won the
-		// highest-tokens comparison is that they all sat at zero tokens.
-		return SelectNoCapacity
-	default:
-		return SelectNoEligibleVendor
-	}
-}
-
-// pickBestLocked scans providers for the highest-token vendor that has a
-// registered implementation and a non-OPEN breaker, optionally skipping
-// excludeVendor. It does not consume a token — the caller takes one from the
-// returned state. Caller holds r.mu.
-func (r *Router) pickBestLocked(clientID string, providers []cachedProvider, excludeVendor string) pick {
-	var out pick
-	bestTokens := 0
-	for _, p := range providers {
-		if _, has := r.factories[p.Vendor]; !has {
-			continue // no implementation registered for this vendor
-		}
-		if excludeVendor != "" && p.Vendor == excludeVendor {
-			continue // skip the vendor that just failed (when an alternative exists)
-		}
-		out.sawCandidate = true
-		st := r.stateForLocked(clientID, p.Vendor)
-		if st.breaker.State() == gobreaker.StateOpen {
-			out.sawOpen = true
-			continue
-		}
-		if st.bucket.tokens > bestTokens {
-			bestTokens = st.bucket.tokens
-			out.state = st
-			out.vendor = p.Vendor
-			out.creds = p.Credentials
-		}
-	}
-	return out
-}
-
-// Send builds (or reuses) the per-client provider and runs the send through the
-// vendor's circuit breaker. The network call happens outside the lock.
-func (r *Router) Send(ctx context.Context, clientID, vendor string, creds []byte, e provider.Email) error {
-	p, breaker, err := r.providerFor(clientID, vendor, creds)
-	if err != nil {
-		return err // credential/build failure — treated as permanent by the caller
-	}
-	_, execErr := breaker.Execute(func() (any, error) {
-		return nil, p.Send(ctx, e)
-	})
-	return execErr
-}
-
-// providerFor returns the cached provider + breaker for (client, vendor),
-// building the provider from decrypted credentials on first use or after the
-// credentials change.
-func (r *Router) providerFor(clientID, vendor string, creds []byte) (provider.Provider, *gobreaker.CircuitBreaker[any], error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	st := r.stateForLocked(clientID, vendor)
-	if st.provider == nil || !bytes.Equal(st.credsRaw, creds) {
-		plain := creds
-		if r.cipher != nil && len(creds) > 0 {
-			dec, err := r.cipher.DecryptCredentials(creds)
+func newRouter(cipher *crypto.Cipher, mock provider.MockConfig) *router {
+	return &router{
+		routes: make(map[routeKey]*route),
+		newProvider: func(clientID uuid.UUID, vendor string, sealed []byte) (provider.Provider, error) {
+			creds, err := cipher.Decrypt(sealed, clientID[:], vendor)
 			if err != nil {
-				return nil, nil, fmt.Errorf("decrypt %s credentials: %w", vendor, err)
+				return nil, err
 			}
-			plain = dec
+			return provider.New(vendor, creds, mock)
+		},
+		limit: 1000,
+		breaker: gobreaker.Settings{
+			MaxRequests: 1, // one probe while half-open
+			Timeout:     30 * time.Second,
+			ReadyToTrip: func(c gobreaker.Counts) bool {
+				return c.Requests >= 20 && float64(c.TotalFailures)/float64(c.Requests) >= 0.5
+			},
+			OnStateChange: func(vendor string, _, to gobreaker.State) {
+				breakerState.WithLabelValues(vendor).Set(float64(to))
+			},
+		},
+	}
+}
+
+// send sends e through one of the client's providers and returns the vendor it
+// used. It prefers a provider other than lastFailed, the one that failed this
+// schedule last time, but falls back to it rather than strand a client that
+// has only one. Among the rest it picks the one with the most rate-limit
+// headroom, skipping any whose breaker is open.
+func (r *router) send(ctx context.Context, clientID uuid.UUID, providers []cachedProvider, lastFailed string, e provider.Email) (string, error) {
+	p, rt, err := r.pick(clientID, providers, lastFailed)
+	if err != nil {
+		return "", err
+	}
+	prov, err := r.providerFor(clientID, p, rt)
+	if err != nil {
+		return p.Vendor, err
+	}
+
+	ctx, span := tracer.Start(ctx, "provider.send", trace.WithAttributes(attribute.String("provider", p.Vendor)))
+	defer span.End()
+	start := time.Now()
+	_, err = rt.breaker.Execute(func() (struct{}, error) { return struct{}{}, prov.Send(ctx, e) })
+	sendDuration.WithLabelValues(p.Vendor).Observe(time.Since(start).Seconds())
+	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		// The breaker opened, or its one half-open probe was taken, after pick.
+		err = errBreakerOpen
+	}
+	if err != nil {
+		span.RecordError(err)
+	}
+	return p.Vendor, err
+}
+
+// pick chooses a provider and takes a token from its rate limit.
+func (r *router) pick(clientID uuid.UUID, providers []cachedProvider, lastFailed string) (cachedProvider, *route, error) {
+	if len(providers) == 0 {
+		return cachedProvider{}, nil, errNoProvider
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	allOpen := true
+	for _, avoidLast := range []bool{true, false} {
+		var best *route
+		var bestProvider cachedProvider
+		bestTokens := 0.0
+		for _, p := range providers {
+			if avoidLast && p.Vendor == lastFailed {
+				continue
+			}
+			rt := r.route(clientID, p.Vendor)
+			if rt.breaker.State() == gobreaker.StateOpen {
+				continue
+			}
+			allOpen = false
+			if tokens := rt.limiter.TokensAt(now); tokens >= 1 && tokens > bestTokens {
+				best, bestProvider, bestTokens = rt, p, tokens
+			}
 		}
-		prov, err := r.factories[vendor](plain)
+		if best != nil {
+			best.limiter.AllowN(now, 1)
+			return bestProvider, best, nil
+		}
+	}
+	if allOpen {
+		return cachedProvider{}, nil, errBreakerOpen
+	}
+	return cachedProvider{}, nil, errNoCapacity
+}
+
+// providerFor returns the route's provider, building it on first use and again
+// whenever the client's credentials change.
+func (r *router) providerFor(clientID uuid.UUID, p cachedProvider, rt *route) (provider.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rt.provider == nil || !bytes.Equal(rt.sealed, p.Credentials) {
+		prov, err := r.newProvider(clientID, p.Vendor, p.Credentials)
 		if err != nil {
-			return nil, nil, fmt.Errorf("build %s provider: %w", vendor, err)
+			return nil, err
 		}
-		st.provider = prov
-		st.credsRaw = append([]byte(nil), creds...)
+		rt.provider, rt.sealed = prov, p.Credentials
 	}
-	return st.provider, st.breaker, nil
+	return rt.provider, nil
 }
 
-// stateForLocked returns the (client, vendor) state, creating its breaker and
-// bucket on first reference. Caller holds r.mu.
-func (r *Router) stateForLocked(clientID, vendor string) *vendorState {
-	k := stateKey(clientID, vendor)
-	st := r.states[k]
-	if st == nil {
-		st = &vendorState{
-			breaker: gobreaker.NewCircuitBreaker[any](r.breakerSettings(vendor)),
-			bucket:  &tokenBucket{tokens: r.capacity, capacity: r.capacity, refill: r.refill},
+// route returns the client's route to vendor, creating it on first use. The
+// caller holds r.mu.
+func (r *router) route(clientID uuid.UUID, vendor string) *route {
+	key := routeKey{clientID, vendor}
+	rt, ok := r.routes[key]
+	if !ok {
+		settings := r.breaker
+		settings.Name = vendor
+		rt = &route{
+			limiter: rate.NewLimiter(r.limit, int(r.limit)), // a second's worth of burst
+			breaker: gobreaker.NewCircuitBreaker[struct{}](settings),
 		}
-		r.states[k] = st
+		r.routes[key] = rt
 	}
-	return st
-}
-
-func (r *Router) breakerSettings(vendor string) gobreaker.Settings {
-	minReqs := r.breakerMinReqs
-	ratio := r.breakerRatio
-	return gobreaker.Settings{
-		Name:        vendor,
-		MaxRequests: 1, // a single probe in half-open
-		Timeout:     r.breakerTimeout,
-		ReadyToTrip: func(c gobreaker.Counts) bool {
-			if c.Requests < minReqs {
-				return false
-			}
-			return float64(c.TotalFailures)/float64(c.Requests) >= ratio
-		},
-		OnStateChange: func(name string, _, to gobreaker.State) {
-			mBreakerState.WithLabelValues(name).Set(float64(int(to)))
-		},
-	}
-}
-
-// vendorOf extracts the vendor from a "clientID|vendor" state key.
-func vendorOf(key string) string {
-	if i := strings.LastIndexByte(key, stateKeySep); i >= 0 {
-		return key[i+1:]
-	}
-	return key
+	return rt
 }

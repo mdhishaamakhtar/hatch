@@ -21,87 +21,72 @@ to years in advance, with at-least-once delivery and pluggable email providers.
 [![Loki](https://img.shields.io/badge/Loki-Logs-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/oss/loki/)
 [![Tempo](https://img.shields.io/badge/Tempo-Traces-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/oss/tempo/)
 
-A timer-wheel scheduler shards the keyspace across replicas and fires due emails
-onto Kafka; stateless delivery workers send them through per-client providers
-(`mock` + `resend`), with tiered retries, a reconciliation sweep for stranded
-rows, and monthly partition archival. Design docs live on
-[Notion](https://ruby-spectacles-2bc.notion.site/Hatch-34123f950a298115a7cec9d05a4d99f4).
+A timer-wheel scheduler, sharded across replicas, fires each email onto Kafka
+when it falls due, and delivery workers send it through the client's own
+providers (`mock` or `resend`). Failed sends climb three retry tiers, a
+reconciliation cron recovers schedules a crash stranded, and an archival cron
+exports and drops each month's partition once it is done with. Design docs live
+on [Notion](https://ruby-spectacles-2bc.notion.site/Hatch-34123f950a298115a7cec9d05a4d99f4).
 
 ## Quick start
 
 Prerequisites:
 
 - Docker Desktop with Kubernetes enabled (Settings → Kubernetes → Enable)
-- `go` ≥ 1.25
-- `helm` ≥ 4 (`brew install helm`)
+- `go` 1.26 or later
+- `helm` (`brew install helm`)
 - `kubectl` (bundled with Docker Desktop)
-- `golang-migrate` (`brew install golang-migrate`)
-- `sqlc` (`brew install sqlc`)
-- `libpq` for `psql` (`brew install libpq && brew link --force libpq`)
-- `redis` for `redis-cli` (`brew install redis`)
+- `sqlc` (`brew install sqlc`), to regenerate `internal/db`
+- `golang-migrate` (`brew install golang-migrate`), for `make migrate`
 
 ```sh
-cp .env.example .env       # tweak placeholders if you need to
-make up-all                # deploy observability + hatch in three phases
+cp .env.example .env    # then set PROVIDER_CRED_KEY: make gen-provider-key
+make build              # build the services' images
+make up-all             # deploy the observability stack, then Hatch
+make verify             # check it all works
 ```
 
-`make up-all` brings up the `observability` stack (Prometheus/Loki/Tempo/Grafana,
-with dashboards and alerts auto-provisioned) then the `hatch` app stack. Day-to-day
-you iterate with `make up` / `make down` / `make restart`, which target `hatch`
-only and leave observability running. See [docs/OPERATIONS.md](docs/OPERATIONS.md)
-for the full command reference.
+`make up-all` deploys two Helm releases: `observability` (Prometheus, Loki, Tempo
+and Grafana, with Hatch's dashboards and alerts) and `hatch`. From then on,
+`make up` and `make down` redeploy `hatch` alone. [docs/OPERATIONS.md](docs/OPERATIONS.md)
+has the rest.
 
 ## Local URLs
 
-Always reachable (LoadBalancer, no port-forward needed):
-
 | Service | URL |
 |---|---|
-| Scheduler API | http://localhost:9021 |
+| API | http://localhost:9021 |
 | Swagger UI | http://localhost:9021/swagger/index.html |
 | Grafana | http://localhost:3000 (admin / admin) |
 | Kafka UI | http://localhost:8080 |
 
-Reachable after `make port-forward` (host tools / ad-hoc debugging):
+After `make port-forward`, Postgres is on localhost:5432 (user and database
+`hatch`), Redis on localhost:6379 and Kafka on localhost:9092.
 
-| Service | URL |
-|---|---|
-| Postgres | localhost:5432 (user `hatch`, db `hatch`) |
-| Redis | localhost:6379 |
-| Kafka broker | localhost:9092 |
-
-Hatch service ports start at `9021` and walk forward (9022 = scheduler admin,
-9023 = delivery-worker, 9024 = retry-consumer, 9025 = reconciliation-cron,
-9026 = partition-archival), keeping the conventional 3000/8080/9090 range free
-for tooling. The scheduler-service runs as a 2-replica StatefulSet behind a
-headless service, so each pod has a stable per-pod DNS name
-(`scheduler-0.scheduler.hatch.svc.cluster.local:9022`, …) — that is how
-`make verify` reaches each shard's admin API without a port-forward.
+The services listen on 9021 to 9026: the API, the scheduler, the delivery
+worker, the retry consumer, the reconciliation cron and the archival cron. Each
+serves `/healthz`, `/readyz` and `/metrics`.
 
 ## Benchmarks
 
 ```sh
-make bench-micro     # in-process micro-benchmarks, no cluster, seconds
-make bench-all       # full reference suite against the deployed stack (~50 min)
+make bench SCENARIO=delivery COUNT=8000   # one scenario
+make bench-all                            # the reference suite (about an hour)
 ```
 
-`bench-all` runs every scenario, scales the delivery workers between points, and
-writes [benchmarks/reference.md](benchmarks/reference.md) — every number in it is
-produced by the harness, none typed by hand. It runs as an in-cluster Job reading
-over ClusterDNS, so nothing depends on a port-forward surviving the run.
-
-To iterate on one scenario: `make bench SCENARIO=delivery COUNT=8000`. Watch a
-run live at <http://localhost:3000/d/hatch-benchmark>.
-
-What the numbers mean, and what bounds each stage, is in
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+The benchmarks run as a Job in the cluster against the deployed stack.
+`make bench-all` scales the delivery workers between runs and writes
+[benchmarks/reference.md](benchmarks/reference.md), every number in which comes
+from the harness. Watch a run at http://localhost:3000/d/hatch-benchmark.
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) explains what the numbers mean, and
+what bounds each stage.
 
 ## Documentation
 
 | Doc | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Per-service design: scheduler, delivery worker, retry consumers, reconciliation + archival crons, repo layout |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Lifecycle + common commands, image flow, env split, `make verify` |
-| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics/logs/traces stack, the Grafana dashboards, the alert list, enabling alert email |
-| [docs/API.md](docs/API.md) | Endpoints, `deliver_at` timestamp format, link to the Swagger UI |
-| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | What the system sustains at each scaling, what bounds each stage, and how to run the suite yourself |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How a schedule moves through the services, and how each works |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Building, deploying, configuring and checking the stack |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics, logs, traces, the dashboards and the alerts |
+| [docs/API.md](docs/API.md) | The API's routes and how to schedule an email |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | What the system sustains, what bounds each stage, and how to measure it |

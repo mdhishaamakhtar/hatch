@@ -123,10 +123,10 @@
     },
     {
       "type": "timeseries",
-      "title": "Scheduler wheel occupancy per pod",
+      "title": "Schedules waiting in each wheel",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 7, "w": 8, "x": 16, "y": 15 },
-      "targets": [ { "refId": "A", "expr": "hatch_scheduler_wheel_occupied_slots", "legendFormat": "pod {{pod_index}}" } ]
+      "targets": [ { "refId": "A", "expr": "hatch_scheduler_wheel_total_loaded", "legendFormat": "{{pod}}" } ]
     },
     {
       "type": "row",

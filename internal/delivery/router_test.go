@@ -2,167 +2,149 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
-	"github.com/mdhishaamakhtar/hatch/pkg/provider"
+	"github.com/google/uuid"
+	"github.com/mdhishaamakhtar/hatch/internal/provider"
 	"github.com/sony/gobreaker/v2"
+	"golang.org/x/time/rate"
 )
 
-type stubProvider struct {
-	vendor string
-	err    error
-	calls  int
+// testRouter sends every route through p. Two failures in a row trip a
+// breaker, which then stays open for the rest of the test.
+func testRouter(p provider.Provider, limit rate.Limit) *router {
+	r := newRouter(nil, provider.MockConfig{})
+	r.newProvider = func(uuid.UUID, string, []byte) (provider.Provider, error) { return p, nil }
+	r.limit = limit
+	r.breaker.ReadyToTrip = func(c gobreaker.Counts) bool { return c.ConsecutiveFailures >= 2 }
+	r.breaker.Timeout = time.Minute
+	return r
 }
 
-func (s *stubProvider) Vendor() string                             { return s.vendor }
-func (s *stubProvider) Send(context.Context, provider.Email) error { s.calls++; return s.err }
-
-func stubFactory(p *stubProvider) provider.Factory {
-	return func([]byte) (provider.Provider, error) { return p, nil }
-}
-
-// testRouter builds a router with cipher=nil (creds pass straight through),
-// minReqs=2 and ratio=0.5 so two failures trip the breaker, and a long open
-// timeout so it stays open for the duration of a test.
-func testRouter(capacity, refill int, factories map[string]provider.Factory) *Router {
-	return NewRouter(factories, nil, capacity, refill, 2, 0.5, time.Minute)
-}
-
-func factories(vendors ...string) map[string]provider.Factory {
-	out := make(map[string]provider.Factory, len(vendors))
-	for _, v := range vendors {
-		out[v] = stubFactory(&stubProvider{vendor: v})
+func vendors(names ...string) []cachedProvider {
+	out := make([]cachedProvider, len(names))
+	for i, n := range names {
+		out[i] = cachedProvider{Vendor: n}
 	}
 	return out
 }
 
-func provs(vendors ...string) []cachedProvider {
-	out := make([]cachedProvider, 0, len(vendors))
-	for _, v := range vendors {
-		out = append(out, cachedProvider{Vendor: v})
-	}
-	return out
+var testClient = uuid.New()
+
+func pickVendor(t *testing.T, r *router, providers []cachedProvider, lastFailed string) (string, error) {
+	t.Helper()
+	p, _, err := r.pick(testClient, providers, lastFailed)
+	return p.Vendor, err
 }
 
-// tripBreaker drives enough failures through a vendor to open its breaker.
-func tripBreaker(r *Router, clientID, vendor string) {
+func tripBreaker(r *router, vendor string) {
+	r.mu.Lock()
+	rt := r.route(testClient, vendor)
+	r.mu.Unlock()
 	for range 2 {
-		_ = r.Send(context.Background(), clientID, vendor, nil, provider.Email{})
+		_, _ = rt.breaker.Execute(func() (struct{}, error) { return struct{}{}, errors.New("provider down") })
 	}
 }
 
-func TestSelectPrefersAnAlternativeToTheLastProvider(t *testing.T) {
-	r := testRouter(100, 100, factories("mock", "resend"))
+// blockingProvider holds each send until released, announcing it on entered.
+type blockingProvider struct{ entered, release chan struct{} }
 
-	sel := r.Select("c1", provs("mock", "resend"), "mock")
+func (b *blockingProvider) Send(context.Context, provider.Email) error {
+	b.entered <- struct{}{}
+	<-b.release
+	return nil
+}
 
-	if sel.Outcome != SelectOK || sel.Vendor != "resend" {
-		t.Fatalf("Select = %+v, want resend (mock just failed)", sel)
+func TestPickAvoidsTheProviderThatJustFailed(t *testing.T) {
+	r := testRouter(&stubProvider{}, 100)
+	if v, err := pickVendor(t, r, vendors("mock", "resend"), "mock"); v != "resend" || err != nil {
+		t.Fatalf("picked %q, %v; want resend", v, err)
 	}
 }
 
-// A single-provider client must not be stranded after one transient blip: the
-// last_provider exclusion is dropped when it would leave no candidate at all.
-func TestSelectRetriesSoleProviderWhenExclusionEmptiesTheSet(t *testing.T) {
-	r := testRouter(100, 100, factories("mock"))
-
-	sel := r.Select("c1", provs("mock"), "mock")
-
-	if sel.Outcome != SelectOK || sel.Vendor != "mock" {
-		t.Fatalf("Select = %+v, want the sole provider retried", sel)
+// A client with one provider must not be stranded because it failed once.
+func TestPickFallsBackToTheOnlyProvider(t *testing.T) {
+	r := testRouter(&stubProvider{}, 100)
+	if v, err := pickVendor(t, r, vendors("mock"), "mock"); v != "mock" || err != nil {
+		t.Fatalf("picked %q, %v; want the sole provider", v, err)
 	}
 }
 
-// The relaxation above does NOT override an open breaker: a genuinely unhealthy
-// sole provider yields no candidate, and the reason must say why.
-func TestSelectReportsBreakerOpenForAnUnhealthySoleProvider(t *testing.T) {
-	stub := &stubProvider{vendor: "mock", err: provider.ErrTransient}
-	r := testRouter(100, 100, map[string]provider.Factory{"mock": stubFactory(stub)})
-	tripBreaker(r, "c1", "mock")
+func TestPickSkipsOpenBreakers(t *testing.T) {
+	r := testRouter(&stubProvider{}, 100)
+	tripBreaker(r, "mock")
 
-	sel := r.Select("c1", provs("mock"), "mock")
-
-	if sel.Outcome != SelectBreakerOpen {
-		t.Fatalf("Outcome = %v, want SelectBreakerOpen", sel.Outcome)
+	if v, err := pickVendor(t, r, vendors("mock", "resend"), ""); v != "resend" || err != nil {
+		t.Errorf("picked %q, %v; want the healthy provider", v, err)
+	}
+	if _, err := pickVendor(t, r, vendors("mock"), ""); !errors.Is(err, errBreakerOpen) {
+		t.Errorf("sole provider's breaker open: err = %v, want errBreakerOpen", err)
 	}
 }
 
-// An unregistered vendor is a configuration problem, and must be distinguishable
-// from a transient one — it's the only outcome that may fail an email outright.
-func TestSelectReportsNoEligibleVendorForUnregisteredVendors(t *testing.T) {
-	r := testRouter(100, 100, factories("mock"))
-
-	if sel := r.Select("c1", provs("sendgrid"), ""); sel.Outcome != SelectNoEligibleVendor {
-		t.Errorf("unregistered vendor: Outcome = %v, want SelectNoEligibleVendor", sel.Outcome)
-	}
-	if sel := r.Select("c1", nil, ""); sel.Outcome != SelectNoEligibleVendor {
-		t.Errorf("no providers at all: Outcome = %v, want SelectNoEligibleVendor", sel.Outcome)
+func TestPickWithoutProviders(t *testing.T) {
+	r := testRouter(&stubProvider{}, 100)
+	if _, err := pickVendor(t, r, nil, ""); !errors.Is(err, errNoProvider) {
+		t.Fatalf("err = %v, want errNoProvider", err)
 	}
 }
 
-// An exhausted bucket is backpressure, not a failure — it has to be told apart
-// from both of the above so the send is deferred rather than failed.
-func TestSelectReportsNoCapacityWhenTheBucketIsEmpty(t *testing.T) {
-	r := testRouter(1, 0, factories("mock"))
-
-	if sel := r.Select("c1", provs("mock"), ""); sel.Outcome != SelectOK {
-		t.Fatalf("first select should consume the single token, got %v", sel.Outcome)
+func TestPickReportsExhaustedRateLimits(t *testing.T) {
+	r := testRouter(&stubProvider{}, 1)
+	if _, err := pickVendor(t, r, vendors("mock"), ""); err != nil {
+		t.Fatalf("first pick: %v", err)
 	}
-	if sel := r.Select("c1", provs("mock"), ""); sel.Outcome != SelectNoCapacity {
-		t.Fatalf("Outcome = %v, want SelectNoCapacity", sel.Outcome)
+	if _, err := pickVendor(t, r, vendors("mock"), ""); !errors.Is(err, errNoCapacity) {
+		t.Fatalf("second pick: err = %v, want errNoCapacity", err)
 	}
 }
 
-func TestSelectPicksTheVendorWithTheMostTokens(t *testing.T) {
-	r := testRouter(100, 0, factories("mock", "resend"))
-	r.mu.Lock()
-	r.stateForLocked("c1", "mock").bucket.tokens = 1
-	r.stateForLocked("c1", "resend").bucket.tokens = 50
-	r.mu.Unlock()
-
-	sel := r.Select("c1", provs("mock", "resend"), "")
-
-	if sel.Outcome != SelectOK || sel.Vendor != "resend" {
-		t.Fatalf("Select = %+v, want resend (more tokens)", sel)
+func TestPickPrefersTheMostHeadroom(t *testing.T) {
+	r := testRouter(&stubProvider{}, 10)
+	for range 5 {
+		_, _ = pickVendor(t, r, vendors("mock"), "") // spend half of mock's tokens
+	}
+	if v, _ := pickVendor(t, r, vendors("mock", "resend"), ""); v != "resend" {
+		t.Fatalf("picked %q, want resend, which has more headroom", v)
 	}
 }
 
-func TestSendTripsTheBreakerAfterRepeatedFailures(t *testing.T) {
-	stub := &stubProvider{vendor: "mock", err: provider.ErrTransient}
-	r := testRouter(100, 100, map[string]provider.Factory{"mock": stubFactory(stub)})
+// While a breaker is half-open it lets one probe through. A send that finds
+// the probe already taken was never attempted, so it must be deferred rather
+// than reported as a provider failure.
+func TestSendDefersWhileTheHalfOpenProbeIsTaken(t *testing.T) {
+	probe := &blockingProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	r := testRouter(probe, 100)
+	r.breaker.Timeout = 10 * time.Millisecond
+	tripBreaker(r, "mock")
+	time.Sleep(20 * time.Millisecond) // past Timeout: the breaker half-opens on its next use
 
-	tripBreaker(r, "c1", "mock")
+	go func() { _, _ = r.send(context.Background(), testClient, vendors("mock"), "", provider.Email{}) }()
+	<-probe.entered
+	defer close(probe.release)
 
-	r.mu.Lock()
-	state := r.stateForLocked("c1", "mock").breaker.State()
-	r.mu.Unlock()
-	if state != gobreaker.StateOpen {
-		t.Fatalf("breaker state = %v, want open after 2 failures", state)
+	if _, err := r.send(context.Background(), testClient, vendors("mock"), "", provider.Email{}); !errors.Is(err, errBreakerOpen) {
+		t.Fatalf("err = %v, want errBreakerOpen", err)
 	}
 }
 
-func TestRefillCapsAtCapacity(t *testing.T) {
-	r := testRouter(10, 4, factories("mock"))
-	r.mu.Lock()
-	r.stateForLocked("c1", "mock").bucket.tokens = 9
-	r.mu.Unlock()
-
-	r.Refill() // 9 + 4 = 13, capped at 10
-
-	r.mu.Lock()
-	got := r.stateForLocked("c1", "mock").bucket.tokens
-	r.mu.Unlock()
-	if got != 10 {
-		t.Fatalf("tokens = %d, want capacity 10", got)
+func TestProviderIsRebuiltWhenCredentialsChange(t *testing.T) {
+	r := testRouter(&stubProvider{}, 100)
+	builds := 0
+	r.newProvider = func(uuid.UUID, string, []byte) (provider.Provider, error) {
+		builds++
+		return &stubProvider{}, nil
 	}
-}
-
-func TestVendorOfExtractsTheVendorFromAStateKey(t *testing.T) {
-	if got := vendorOf(stateKey("client-1", "resend")); got != "resend" {
-		t.Errorf("vendorOf = %q, want resend", got)
+	send := func(creds string) {
+		_, _ = r.send(context.Background(), testClient, []cachedProvider{{Vendor: "resend", Credentials: []byte(creds)}}, "", provider.Email{})
 	}
-	if got := vendorOf("no-separator"); got != "no-separator" {
-		t.Errorf("vendorOf on a malformed key = %q, want the key itself", got)
+
+	send("key-1")
+	send("key-1")
+	send("key-2")
+	if builds != 2 {
+		t.Fatalf("built the provider %d times, want 2 (once per credential)", builds)
 	}
 }

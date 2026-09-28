@@ -1,33 +1,27 @@
-// bench runs one Hatch benchmark scenario from inside the cluster and prints
-// its result.
-//
-// It is driven entirely by environment variables (BENCH_SCENARIO, BENCH_COUNT,
-// …) so that one Job manifest serves every point of a sweep. The human-readable
-// report goes to stderr; stdout carries only the result JSON, wrapped in
-// markers, so the host orchestrator can collect it from `kubectl logs` without
-// parsing prose.
-//
-//	go run ./cmd/bench      # honours the same env vars locally
+// Command bench runs one benchmark scenario against a deployed Hatch stack;
+// see internal/bench. The report goes to stderr. Stdout carries only the
+// result, as JSON between markers, for scripts/bench.sh to collect from the
+// Job's log.
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/mdhishaamakhtar/hatch/internal/bench"
-	"github.com/mdhishaamakhtar/hatch/pkg/config"
 )
 
-// Markers delimiting the JSON payload on stdout. The host greps between them,
-// which keeps the contract explicit instead of depending on the JSON being the
-// only brace-shaped thing in the log.
 const (
-	jsonBegin = "---BENCH-RESULT-BEGIN---"
-	jsonEnd   = "---BENCH-RESULT-END---"
+	resultBegin = "---BENCH-RESULT-BEGIN---"
+	resultEnd   = "---BENCH-RESULT-END---"
 )
 
 func main() {
@@ -38,46 +32,37 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load[bench.Config]()
+	cfg, err := env.ParseAs[bench.Config]()
 	if err != nil {
 		return err
 	}
-
-	scenario, err := bench.ScenarioByName(cfg.Scenario)
-	if err != nil {
-		return err
+	scenario, ok := bench.Scenarios[cfg.Scenario]
+	if !ok {
+		return fmt.Errorf("unknown scenario %q (have %s)", cfg.Scenario, strings.Join(slices.Sorted(maps.Keys(bench.Scenarios)), ", "))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Fprintf(os.Stderr, "== %s ==\n%s\n\n", scenario.Name, scenario.Question)
-
-	runner, err := bench.NewRunner(ctx, cfg, bench.Options{
-		Count: cfg.Count, Workers: cfg.Workers, RPS: cfg.RPS,
-		Spread: cfg.Spread, Label: cfg.Label,
-	})
+	fmt.Fprintf(os.Stderr, "== %s ==\n%s\n\n", cfg.Scenario, scenario.Question)
+	runner, err := bench.NewRunner(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	// Torn down on a fresh context: ctx may already be cancelled by a SIGTERM,
-	// and the throwaway client should still be cleaned up.
+	// Not ctx, which a SIGTERM cancels: the client should be deleted anyway.
 	defer runner.Close(context.WithoutCancel(ctx))
 
 	res, err := scenario.Run(ctx, runner)
 	if err != nil {
 		return err
 	}
-
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, res.Markdown())
 
-	raw, err := json.Marshal(res)
+	out, err := json.Marshal(res)
 	if err != nil {
-		return fmt.Errorf("encode result: %w", err)
+		return err
 	}
-	fmt.Println(jsonBegin)
-	fmt.Println(string(raw))
-	fmt.Println(jsonEnd)
+	fmt.Printf("%s\n%s\n%s\n", resultBegin, out, resultEnd)
 	return nil
 }

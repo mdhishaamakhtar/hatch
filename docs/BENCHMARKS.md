@@ -7,6 +7,9 @@ The numbers cited here all come from [`benchmarks/reference.md`](../benchmarks/r
 which is written by the harness. Nothing in this file is typed by hand except
 the reasoning. If the two ever disagree, the generated file is the measurement.
 
+That run measured commit `cdce4be`. The scheduler and the delivery workers have
+changed since, so run `make bench-all` again before relying on their ceilings.
+
 There are no targets in this document. Hatch does not promise a latency, and a
 benchmark that grades itself against a number someone invented measures the
 number, not the system. What follows is a capability description: at a given
@@ -45,8 +48,7 @@ not of Hatch, and it sets the top of the sweep.
 ## Running it
 
 ```sh
-make bench-micro     # in-process, no cluster, seconds
-make bench-all       # full sweep against the deployed stack, ~50 min
+make bench-all                             # the full sweep, about an hour
 make bench SCENARIO=delivery COUNT=3000    # one point
 ```
 
@@ -78,9 +80,11 @@ million about an hour and a half. For a campaign planned in advance, ingest is
 not the constraint — you can fill the schedule far faster than you can drain it.
 
 > **To raise it:** the API is stateless behind a Service. Add replicas. The
-> per-request work is one sha256 over the key, one Redis token-bucket call, and
-> one Postgres insert; none of that serialises across replicas, so this should
-> scale close to linearly until Postgres write throughput becomes the limit.
+> per-request work is a sha256 of the key and one query to look it up, an
+> in-memory token bucket, and one insert; none of that serialises across
+> replicas, so this should scale close to linearly until Postgres write
+> throughput becomes the limit. (The token bucket is per replica, so a client's
+> effective limit grows with the replica count.)
 
 ## Stage 2 — firing on time
 
@@ -88,9 +92,9 @@ The scheduler is not close to being a bottleneck and the numbers are almost
 boring: producing a due schedule to Kafka has a p95 of **0.98 ms**.
 
 Its real constraint is resolution, not rate. The wheel has 1-second slots, so a
-schedule fires in the second it is due and never earlier — `SlotForDeliverAt`
-rounds *up* precisely so a send cannot go out before the customer asked. Sub-
-second precision is not on offer and would require changing the slot duration.
+schedule fires in the second it is due and never earlier: the wheel rounds
+`deliver_at` *up* to a whole second precisely so a send cannot go out before the
+customer asked. Sub-second precision is not on offer.
 
 Work is split across scheduler pods by hashing the schedule id, so this stage
 scales by adding pods to the StatefulSet.
@@ -230,7 +234,7 @@ cores. Kubernetes will schedule against the phantom ones.
 | Provider latency | the model divides by it — a faster provider raises throughput at the same concurrency |
 
 That last row is worth stating plainly: these numbers are all against
-`MockProvider` at 150 ms + jitter, set by `MOCK_PROVIDER_LATENCY_MS`. Change it
+`MockProvider` at 150 ms + jitter, set by `MOCK_PROVIDER_LATENCY`. Change it
 and every delivery figure moves proportionally, because
 `emails/sec ≈ in_flight ÷ provider_latency` is the whole model. Benchmarking
 against a real provider measures that provider's rate limits instead, which is a

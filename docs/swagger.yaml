@@ -1,20 +1,21 @@
 basePath: /
 definitions:
-  internal_api.apiError:
+  ErrorBody:
     properties:
       error:
         type: string
       reason:
         type: string
     type: object
-  internal_api.createClientRequest:
+  createClientRequest:
     properties:
       max_rps:
+        description: defaults to 100
         type: integer
       name:
         type: string
     type: object
-  internal_api.createClientResponse:
+  createClientResponse:
     properties:
       api_key:
         type: string
@@ -25,11 +26,12 @@ definitions:
       name:
         type: string
     type: object
-  internal_api.createScheduleRequest:
+  createScheduleRequest:
     properties:
       body:
         type: string
       deliver_at:
+        description: Unix milliseconds
         type: integer
       from_email:
         type: string
@@ -46,7 +48,7 @@ definitions:
       subject:
         type: string
     type: object
-  internal_api.scheduleFullResponse:
+  scheduleDetail:
     properties:
       body:
         type: string
@@ -81,7 +83,7 @@ definitions:
       updated_at:
         type: string
     type: object
-  internal_api.scheduleResponse:
+  scheduleResponse:
     properties:
       deliver_at:
         type: integer
@@ -90,16 +92,17 @@ definitions:
       status:
         type: string
     type: object
-  internal_api.upsertProviderRequest:
+  upsertProviderRequest:
     properties:
       credentials:
-        items:
-          type: integer
-        type: array
+        type: object
       vendor:
+        enum:
+        - mock
+        - resend
         type: string
     type: object
-  internal_api.upsertProviderResponse:
+  upsertProviderResponse:
     properties:
       client_id:
         type: string
@@ -113,9 +116,8 @@ definitions:
 host: localhost:9021
 info:
   contact: {}
-  description: |-
-    Schedule emails for future delivery. Admin endpoints provision
-    clients and per-vendor provider credentials.
+  description: Schedule emails for future delivery. Admin endpoints provision clients
+    and their providers' credentials.
   title: Hatch Scheduler API
   version: "1.0"
 paths:
@@ -124,27 +126,27 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: client config
+      - description: The client
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_api.createClientRequest'
+          $ref: '#/definitions/createClientRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/internal_api.createClientResponse'
+            $ref: '#/definitions/createClientResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
       summary: Create a client
@@ -153,24 +155,22 @@ paths:
   /admin/clients/{client_id}:
     delete:
       parameters:
-      - description: client UUID
+      - description: Client id
         in: path
         name: client_id
         required: true
         type: string
-      produces:
-      - application/json
       responses:
         "204":
           description: No Content
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
       summary: Delete a client
@@ -181,66 +181,71 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: client UUID
+      - description: Client id
         in: path
         name: client_id
         required: true
         type: string
-      - description: vendor + credentials
+      - description: Vendor and credentials, such as an api_key for resend
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_api.upsertProviderRequest'
+          $ref: '#/definitions/upsertProviderRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/internal_api.upsertProviderResponse'
+            $ref: '#/definitions/upsertProviderResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
-      summary: Upsert a client provider
+      summary: Register a client's provider
       tags:
       - admin
   /admin/clients/{client_id}/providers/{vendor}:
     delete:
       parameters:
-      - description: client UUID
+      - description: Client id
         in: path
         name: client_id
         required: true
         type: string
-      - description: vendor (resend|ses|sendgrid|smtp)
+      - description: Vendor
+        enum:
+        - mock
+        - resend
         in: path
         name: vendor
         required: true
         type: string
-      produces:
-      - application/json
       responses:
         "204":
           description: No Content
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
-      summary: Delete a client provider
+      summary: Delete a client's provider
       tags:
       - admin
   /v1/schedules:
@@ -248,43 +253,43 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: schedule payload
+      - description: The email and when to send it
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_api.createScheduleRequest'
+          $ref: '#/definitions/createScheduleRequest'
       produces:
       - application/json
       responses:
         "200":
-          description: idempotent replay
+          description: Idempotent replay
           schema:
-            $ref: '#/definitions/internal_api.scheduleResponse'
+            $ref: '#/definitions/scheduleResponse'
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/internal_api.scheduleResponse'
+            $ref: '#/definitions/scheduleResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "413":
           description: Request Entity Too Large
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "415":
           description: Unsupported Media Type
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "429":
           description: Too Many Requests
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
       summary: Schedule an email
@@ -293,7 +298,7 @@ paths:
   /v1/schedules/{schedule_id}:
     delete:
       parameters:
-      - description: schedule UUID
+      - description: Schedule id
         in: path
         name: schedule_id
         required: true
@@ -306,19 +311,19 @@ paths:
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "409":
-          description: Conflict
+          description: Already delivered, failed or cancelled
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
       summary: Cancel a schedule
@@ -326,7 +331,7 @@ paths:
       - schedules
     get:
       parameters:
-      - description: schedule UUID
+      - description: Schedule id
         in: path
         name: schedule_id
         required: true
@@ -337,19 +342,19 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_api.scheduleFullResponse'
+            $ref: '#/definitions/scheduleDetail'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_api.apiError'
+            $ref: '#/definitions/ErrorBody'
       security:
       - BearerAuth: []
       summary: Get a schedule
@@ -359,7 +364,7 @@ schemes:
 - http
 securityDefinitions:
   BearerAuth:
-    description: '"Bearer <api_key>" — client key for /v1/*, admin key for /admin/*.'
+    description: '"Bearer <api_key>": a client''s key for /v1, the admin key for /admin.'
     in: header
     name: Authorization
     type: apiKey
