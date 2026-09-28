@@ -124,7 +124,7 @@ kps:
         type: tempo
         uid: tempo
         access: proxy
-        url: http://observability-tempo.observability.svc.cluster.local:3100
+        url: http://observability-tempo.observability.svc.cluster.local:3200
         jsonData:
           tracesToLogsV2:
             datasourceUid: loki
@@ -170,6 +170,10 @@ loki:
   gateway:
     enabled: true
     replicas: 1
+    # The chart allows one gateway pod per node, so on a one-node cluster an
+    # update has to stop the old pod before it can start the new one.
+    deploymentStrategy:
+      type: Recreate
   test:
     enabled: false
   lokiCanary:

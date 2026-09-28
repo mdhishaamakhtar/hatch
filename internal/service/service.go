@@ -32,7 +32,9 @@ const shutdownTimeout = 10 * time.Second
 // is set, and calls run with a context cancelled on SIGINT or SIGTERM. An error
 // from run is logged and exits the process with status 1.
 func Run(name string, run func(ctx context.Context, lg *zap.Logger) error) {
-	lg, err := zap.NewProduction()
+	// Stack traces only for panics: on an error they always show the same few
+	// frames of the process that logged it.
+	lg, err := zap.NewProduction(zap.AddStacktrace(zap.DPanicLevel))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create logger:", err)
 		os.Exit(1)

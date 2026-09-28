@@ -39,7 +39,9 @@ if (( FAILS > 0 )); then
 fi
 
 printf "\n== Audit ==\n"
-make build-verify >/dev/null || { echo "building the verify image failed" >&2; exit 1; }
+if ! make build-verify >/tmp/hatch-verify.log 2>&1; then
+  echo "building the verify image failed:" >&2; tail -20 /tmp/hatch-verify.log >&2; exit 1
+fi
 replicas=$(kubectl -n hatch get statefulset scheduler -o jsonpath='{.spec.replicas}')
 kubectl -n hatch delete job hatch-verify --ignore-not-found >/dev/null
 sed -e "s|\${VERIFY_IMAGE}|hatch/verify:$(cat .verify-image-tag)|" -e "s|\${SCHEDULER_REPLICAS}|$replicas|" \
