@@ -1,0 +1,67 @@
+{{- if .Values.services.enabled }}
+# Headless, so each pod has a DNS name of its own (scheduler-0.scheduler, …):
+# an on-demand poll has to reach every shard, not whichever one a load
+# balancer picks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler
+  labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: scheduler}
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/component: scheduler}
+  ports:
+    - {name: http, port: {{ .Values.scheduler.port }}, targetPort: http}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scheduler
+  labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: scheduler}
+spec:
+  serviceName: scheduler
+  replicas: {{ .Values.scheduler.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app.kubernetes.io/component: scheduler}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: scheduler}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.scheduler.port | quote }}
+    spec:
+      initContainers:
+        {{- include "hatch.waitFor" (list . "postgres" "kafka") | nindent 8 }}
+      containers:
+        - name: scheduler
+          image: {{ index .Values.images "scheduler" }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: {{ .Values.scheduler.port }}}
+          envFrom:
+            - secretRef: {name: hatch-secrets}
+          env:
+            - {name: PORT, value: {{ .Values.scheduler.port | quote }}}
+            # Each pod is one shard: the pod's ordinal of however many there are.
+            - name: POD_INDEX
+              valueFrom:
+                fieldRef: {fieldPath: "metadata.labels['apps.kubernetes.io/pod-index']"}
+            - {name: TOTAL_PODS, value: {{ .Values.scheduler.replicas | quote }}}
+            - {name: SCHEDULER_WHEEL_DB_PATH, value: /var/lib/hatch/wheel.db}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - {name: wheel-data, mountPath: /var/lib/hatch}
+  volumeClaimTemplates:
+    - metadata:
+        name: wheel-data
+        labels: {app.kubernetes.io/part-of: hatch}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: {{ .Values.scheduler.wheelStorage }}}
+{{- end }}

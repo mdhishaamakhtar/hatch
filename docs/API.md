@@ -1,33 +1,47 @@
 # API
 
-The scheduler API is served on `http://localhost:9021`. The full OpenAPI spec is
-generated from handler annotations (`make swag-gen`) and browsable at
-**http://localhost:9021/swagger/index.html** (raw spec in
-[`docs/swagger.yaml`](swagger.yaml) / [`docs/swagger.json`](swagger.json)).
+The API listens on http://localhost:9021. Its OpenAPI spec is generated from the
+handlers' annotations (`make swag`) into [`swagger.yaml`](swagger.yaml) and
+[`swagger.json`](swagger.json), and can be browsed at
+http://localhost:9021/swagger/index.html.
 
-Client routes under `/v1/*` require a client API key; admin routes under
-`/admin/*` require `$ADMIN_API_KEY`. Per-client rate limits return `429` with
-`Retry-After: 1` when exhausted.
+Routes under `/v1` take a client's API key as a bearer token, and routes under
+`/admin` take `ADMIN_API_KEY`. A client that exceeds its `max_rps` gets `429`,
+with `Retry-After: 1`.
 
-## Timestamp format
-
-`deliver_at` on every schedule request and response is an int64 of
-milliseconds since the Unix epoch (UTC). Validation:
-
-- `0` or missing → `deliver_at_required`
-- negative → `deliver_at_format`
-- less than 1 hour in the future → `deliver_at_too_soon`
-
-## Endpoints at a glance
-
-| Method | Path | Purpose |
+| Method | Path | Does |
 |---|---|---|
-| `POST` | `/v1/schedules` | Create a schedule (validation, idempotency key, active-provider check) |
-| `GET` | `/v1/schedules/:id` | Fetch a schedule (client-scoped) |
-| `DELETE` | `/v1/schedules/:id` | Cancel a schedule (status-guarded) |
-| `POST` | `/admin/clients` | Create a client; returns the plaintext API key once |
-| `DELETE` | `/admin/clients/:id` | Soft-delete a client (invalidates Redis cache) |
-| `POST` | `/admin/clients/:id/providers` | Register/encrypt per-client provider credentials |
-| `DELETE` | `/admin/clients/:id/providers/:vendor` | Soft-delete a provider |
+| `POST` | `/v1/schedules` | Schedule an email |
+| `GET` | `/v1/schedules/{id}` | Read one of the client's schedules |
+| `DELETE` | `/v1/schedules/{id}` | Cancel a schedule that has not finished (`409` once it has) |
+| `POST` | `/admin/clients` | Create a client. The response holds its API key, which is not stored and cannot be shown again |
+| `DELETE` | `/admin/clients/{id}` | Deactivate a client: its key stops working, and its schedules are cancelled as they come due |
+| `POST` | `/admin/clients/{id}/providers` | Register a client's credentials for a vendor, `mock` or `resend`, replacing any it had |
+| `DELETE` | `/admin/clients/{id}/providers/{vendor}` | Remove a client's provider |
 
-See the Swagger UI for full request/response shapes.
+An error is a JSON object with an `error` code and, where it helps, a `reason`:
+`{"error": "validation_failed", "reason": "deliver_at_too_soon"}`.
+
+## Scheduling an email
+
+```json
+{
+  "deliver_at": 1767225600000,
+  "recipient_email": "someone@example.com",
+  "from_email": "hello@yourdomain.com",
+  "from_name": "Your Company",
+  "subject": "Happy new year",
+  "body": "<p>…</p>",
+  "idempotency_key": "new-year-2026-someone",
+  "metadata": {"campaign": "new-year"}
+}
+```
+
+`deliver_at` is in Unix milliseconds. It has to be at least
+`API_MIN_SCHEDULE_HORIZON` ahead (an hour, by default) and at most ten years.
+The addresses must be bare addresses, without display names; `from_name` sets
+the sender's name.
+
+A client's `idempotency_key` names one schedule: sending the same key again
+creates nothing, and answers `200` with the schedule the key created, instead of
+`201`.

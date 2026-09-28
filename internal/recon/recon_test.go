@@ -2,126 +2,73 @@ package recon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/mdhishaamakhtar/hatch/gen"
-	"github.com/mdhishaamakhtar/hatch/pkg/db"
-	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
+	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
 )
 
-// fakeProducer records the records it's asked to produce and can be made to fail.
-type fakeProducer struct {
-	got     []*kgo.Record
-	failErr error
-}
-
-func (f *fakeProducer) Produce(_ context.Context, r *kgo.Record) error {
-	f.got = append(f.got, r)
-	return f.failErr
-}
-
-// fakeStore returns canned pass rows / errors.
 type fakeStore struct {
-	pass1 []gen.ReconPass1FreshAttemptRow
-	pass2 []gen.ReconPass2OrphanedRetryRow
-	err1  error
-	err2  error
+	unattempted, orphaned [][]byte
+	err                   error
 }
 
-func (s fakeStore) ReconPass1FreshAttempt(context.Context) ([]gen.ReconPass1FreshAttemptRow, error) {
-	return s.pass1, s.err1
+func (f fakeStore) RecoverUnattempted(context.Context) ([][]byte, error)     { return f.unattempted, f.err }
+func (f fakeStore) RecoverOrphanedRetries(context.Context) ([][]byte, error) { return f.orphaned, nil }
+
+type fakeProducer struct{ produced []*kgo.Record }
+
+func (f *fakeProducer) ProduceSync(_ context.Context, rs ...*kgo.Record) kgo.ProduceResults {
+	f.produced = append(f.produced, rs...)
+	var out kgo.ProduceResults
+	for _, r := range rs {
+		out = append(out, kgo.ProduceResult{Record: r})
+	}
+	return out
 }
-func (s fakeStore) ReconPass2OrphanedRetry(context.Context) ([]gen.ReconPass2OrphanedRetryRow, error) {
-	return s.pass2, s.err2
+
+func ids(n int) ([][]byte, map[uuid.UUID]bool) {
+	raw := make([][]byte, n)
+	set := make(map[uuid.UUID]bool, n)
+	for i := range raw {
+		id := uuid.New()
+		raw[i], set[id] = id[:], true
+	}
+	return raw, set
 }
 
-func testTracer() {
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())))
-}
-
-func TestReconcileOnceProducesRecoveredIDs(t *testing.T) {
-	testTracer()
-	tr := otel.Tracer("test")
-
-	id1, id2, id3 := uuid.New(), uuid.New(), uuid.New()
-	store := fakeStore{
-		pass1: []gen.ReconPass1FreshAttemptRow{{ID: db.UUIDToBytes(id1)}, {ID: db.UUIDToBytes(id2)}},
-		pass2: []gen.ReconPass2OrphanedRetryRow{{ID: db.UUIDToBytes(id3)}},
+func TestSweepRequeuesWhatBothPassesRecover(t *testing.T) {
+	unattempted, want := ids(2)
+	orphaned, more := ids(1)
+	for id := range more {
+		want[id] = true
 	}
-	fp := &fakeProducer{}
+	prod := &fakeProducer{}
 
-	p1, p2, err := ReconcileOnce(context.Background(), store, fp, tr, zap.NewNop())
-	if err != nil {
-		t.Fatalf("ReconcileOnce: %v", err)
+	u, o, err := Sweep(context.Background(), zap.NewNop(), fakeStore{unattempted: unattempted, orphaned: orphaned}, prod)
+	if err != nil || u != 2 || o != 1 {
+		t.Fatalf("Sweep = (%d, %d, %v), want (2, 1, nil)", u, o, err)
 	}
-	if p1 != 2 || p2 != 1 {
-		t.Fatalf("counts = (%d,%d), want (2,1)", p1, p2)
+	if len(prod.produced) != 3 {
+		t.Fatalf("produced %d records, want 3", len(prod.produced))
 	}
-	if len(fp.got) != 3 {
-		t.Fatalf("produced %d records, want 3", len(fp.got))
-	}
-
-	wantIDs := map[string]bool{id1.String(): true, id2.String(): true, id3.String(): true}
-	for _, r := range fp.got {
-		if r.Topic != kafka.TopicEmailsDue {
-			t.Errorf("topic = %q, want %q", r.Topic, kafka.TopicEmailsDue)
-		}
-		if len(r.Key) != 16 {
-			t.Errorf("key len = %d, want 16-byte binary uuid", len(r.Key))
-		}
-		sid := scheduleIDOf(t, r.Value)
-		if !wantIDs[sid] {
-			t.Errorf("unexpected schedule_id %q", sid)
-		}
-		// The key bytes must round-trip to the same uuid as the payload.
-		u, err := db.BytesToUUID(r.Key)
-		if err != nil || u.String() != sid {
-			t.Errorf("key uuid %v (%v) != payload schedule_id %q", u, err, sid)
-		}
-		if !hasHeader(r, "traceparent") {
-			t.Errorf("missing traceparent header on re-enqueued record")
+	for _, r := range prod.produced {
+		id, err := kafka.ScheduleID(r)
+		if err != nil || !want[id] || r.Topic != kafka.TopicDue {
+			t.Errorf("unexpected record %s on %s", r.Value, r.Topic)
 		}
 	}
 }
 
-func TestReconcileOncePass1Error(t *testing.T) {
-	testTracer()
-	tr := otel.Tracer("test")
-	store := fakeStore{err1: errors.New("db down")}
-	fp := &fakeProducer{}
-	if _, _, err := ReconcileOnce(context.Background(), store, fp, tr, zap.NewNop()); err == nil {
-		t.Fatal("expected error when pass 1 fails")
+func TestSweepStopsWhenAQueryFails(t *testing.T) {
+	prod := &fakeProducer{}
+	if _, _, err := Sweep(context.Background(), zap.NewNop(), fakeStore{err: errors.New("db down")}, prod); err == nil {
+		t.Fatal("Sweep succeeded despite the query failing")
 	}
-	if len(fp.got) != 0 {
-		t.Fatalf("produced %d records on pass1 failure, want 0", len(fp.got))
+	if len(prod.produced) != 0 {
+		t.Errorf("produced %d records after a failed query", len(prod.produced))
 	}
-}
-
-func scheduleIDOf(t *testing.T, value []byte) string {
-	t.Helper()
-	var p struct {
-		ScheduleID string `json:"schedule_id"`
-	}
-	if err := json.Unmarshal(value, &p); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
-	return p.ScheduleID
-}
-
-func hasHeader(r *kgo.Record, key string) bool {
-	for _, h := range r.Headers {
-		if h.Key == key {
-			return true
-		}
-	}
-	return false
 }

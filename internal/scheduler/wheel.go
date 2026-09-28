@@ -1,168 +1,148 @@
 package scheduler
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-	"sync"
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mdhishaamakhtar/hatch/internal/db"
+	bolt "go.etcd.io/bbolt"
 )
 
-// SlotsPerDim is the number of minute slots in an hour, and second slots in a
-// minute. The wheel is a 60×60 array — one entry per (mm, ss) within the
-// active hour. See LLD §Scheduler.
-const SlotsPerDim = 60
+var (
+	// schedulesBucket holds one key per loaded schedule: the second it fires
+	// (Unix time, big-endian) followed by its id. bbolt keeps keys sorted, so a
+	// cursor walks schedules in the order they fall due, and loading the same
+	// schedule twice writes the same key.
+	schedulesBucket = []byte("schedules")
 
-// Slot is a position in the wheel: the minute and second within the active hour
-// at which its schedules fire.
-type Slot struct {
-	Min, Sec int
+	// metaBucket holds loadedUntilKey: how far ahead the wheel has been loaded.
+	metaBucket     = []byte("meta")
+	loadedUntilKey = []byte("loaded_until")
+)
+
+// wheel is the scheduler's timer: the schedules this pod has loaded and not yet
+// fired, kept in bbolt so that they survive a restart. A restarted pod carries
+// on from exactly where it stopped, and whatever came due while it was down
+// fires on its first tick.
+type wheel struct {
+	db *bolt.DB
 }
 
-// SlotOf is the slot whose firing window contains t — that is, the slot G3
-// drains on the tick that lands inside t's second. The sub-second part of t is
-// dropped, because the wheel's resolution is one second.
-//
-// This is the ticker's view. Use SlotForDeliverAt to place a schedule.
-func SlotOf(t time.Time) Slot { return Slot{Min: t.Minute(), Sec: t.Second()} }
-
-// SlotForDeliverAt is the slot a schedule due at deliverAt must be placed in.
-//
-// It rounds *up* to the next whole second whenever deliverAt carries a
-// sub-second remainder. Placing it by SlotOf instead would truncate: a schedule
-// for 12:34:56.789 would land in slot 34:56, which fires during the 56th second
-// — up to 789ms *before* the caller asked for. A scheduler may run late; it must
-// never deliver early, and "early" is the one error a caller cannot compensate
-// for.
-//
-// The cost is that firing is now late by up to one second rather than early by
-// up to one second. That is the wheel's resolution showing through, and it is
-// the honest form of it: end-to-end latency measured from deliver_at is now
-// always a real, non-negative duration.
-func SlotForDeliverAt(deliverAt time.Time) Slot {
-	whole := deliverAt.Truncate(time.Second)
-	if whole.Before(deliverAt) {
-		whole = whole.Add(time.Second)
+func openWheel(path string) (*wheel, error) {
+	bdb, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return nil, err
 	}
-	return SlotOf(whole)
-}
-
-// String is the canonical "MM:SS" form, which doubles as the bbolt key.
-func (s Slot) String() string { return fmt.Sprintf("%02d:%02d", s.Min, s.Sec) }
-
-// valid reports whether both components are in range for the wheel array.
-func (s Slot) valid() bool {
-	return s.Min >= 0 && s.Min < SlotsPerDim && s.Sec >= 0 && s.Sec < SlotsPerDim
-}
-
-// ParseSlot turns "MM:SS" back into a Slot. ok is false if the input is
-// malformed or out of range.
-func ParseSlot(s string) (Slot, bool) {
-	mmStr, ssStr, found := strings.Cut(s, ":")
-	if !found {
-		return Slot{}, false
+	err = bdb.Update(func(tx *bolt.Tx) error {
+		if _, err := tx.CreateBucketIfNotExists(schedulesBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(metaBucket)
+		return err
+	})
+	if err != nil {
+		bdb.Close()
+		return nil, err
 	}
-	mm, errMin := strconv.Atoi(mmStr)
-	ss, errSec := strconv.Atoi(ssStr)
-	if errMin != nil || errSec != nil {
-		return Slot{}, false
+	return &wheel{db: bdb}, nil
+}
+
+func (w *wheel) close() error { return w.db.Close() }
+
+// load adds schedules to the wheel and records that everything due up to until
+// has now been loaded, in one transaction.
+func (w *wheel) load(rows []db.ListDueRow, until time.Time) error {
+	untilBytes, err := until.MarshalBinary()
+	if err != nil {
+		return err
 	}
-	slot := Slot{Min: mm, Sec: ss}
-	return slot, slot.valid()
-}
-
-// SlotSummary is the JSON shape returned by /internal/wheel/slots.
-type SlotSummary struct {
-	Slot  string `json:"slot"`
-	Count int    `json:"count"`
-}
-
-// Wheel is the in-memory timer wheel. G2 is the sole writer; G3 reads (and
-// clears) entries on its 1-second tick. The mutex guards the slot slices —
-// G2's bbolt write happens inside the same lock so memory and disk move
-// together.
-//
-// present tracks every id currently in the wheel so one schedule can't be
-// loaded twice. Recovery and the startup poll legitimately cover overlapping
-// rows; without this, every restart would fire each of those rows twice.
-type Wheel struct {
-	mu      sync.Mutex
-	slots   [SlotsPerDim][SlotsPerDim][][16]byte
-	present map[[16]byte]struct{}
-}
-
-// NewWheel returns an empty wheel ready for use.
-func NewWheel() *Wheel {
-	return &Wheel{present: make(map[[16]byte]struct{})}
-}
-
-// Append adds id to the slot, reporting false if the wheel already holds it (a
-// duplicate load, which the caller should neither persist nor count again).
-func (w *Wheel) Append(slot Slot, id [16]byte) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, dup := w.present[id]; dup {
-		return false
-	}
-	w.present[id] = struct{}{}
-	w.slots[slot.Min][slot.Sec] = append(w.slots[slot.Min][slot.Sec], id)
-	return true
-}
-
-// Drain returns and clears every id in the slot. G3 calls this once per tick.
-func (w *Wheel) Drain(slot Slot) [][16]byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	ids := w.slots[slot.Min][slot.Sec]
-	w.slots[slot.Min][slot.Sec] = nil
-	for _, id := range ids {
-		delete(w.present, id)
-	}
-	return ids
-}
-
-// Stats returns (occupied_slots, total_loaded). Cheap O(3600); called on every
-// admin request and once per second by the ticker to update gauges.
-func (w *Wheel) Stats() (occupied, total int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for mm := range SlotsPerDim {
-		for ss := range SlotsPerDim {
-			if n := len(w.slots[mm][ss]); n > 0 {
-				occupied++
-				total += n
+	return w.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(schedulesBucket)
+		for _, row := range rows {
+			id, err := uuid.FromBytes(row.ID)
+			if err != nil {
+				return err
+			}
+			if err := b.Put(wheelKey(fireAt(row.DeliverAt), id), nil); err != nil {
+				return err
 			}
 		}
-	}
-	return occupied, total
+		return tx.Bucket(metaBucket).Put(loadedUntilKey, untilBytes)
+	})
 }
 
-// Slots returns one entry per occupied slot, sorted by minute then second.
-func (w *Wheel) Slots() []SlotSummary {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	var out []SlotSummary
-	for mm := range SlotsPerDim {
-		for ss := range SlotsPerDim {
-			if n := len(w.slots[mm][ss]); n > 0 {
-				out = append(out, SlotSummary{Slot: Slot{Min: mm, Sec: ss}.String(), Count: n})
+// loadedUntil reports how far ahead the wheel has been loaded, or the zero time
+// if it never has been.
+func (w *wheel) loadedUntil() (time.Time, error) {
+	var until time.Time
+	err := w.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(metaBucket).Get(loadedUntilKey)
+		if v == nil {
+			return nil
+		}
+		return until.UnmarshalBinary(v)
+	})
+	return until, err
+}
+
+// due returns the key of every schedule that fires at or before now.
+func (w *wheel) due(now time.Time) ([][]byte, error) {
+	limit := wheelKey(now.Unix()+1, uuid.Nil)
+	var keys [][]byte
+	err := w.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(schedulesBucket).Cursor()
+		for k, _ := c.First(); k != nil && bytes.Compare(k, limit) < 0; k, _ = c.Next() {
+			// bbolt's keys are only valid inside the transaction.
+			keys = append(keys, bytes.Clone(k))
+		}
+		return nil
+	})
+	return keys, err
+}
+
+// remove deletes schedules by key once they have been fired.
+func (w *wheel) remove(keys [][]byte) error {
+	return w.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(schedulesBucket)
+		for _, k := range keys {
+			if err := b.Delete(k); err != nil {
+				return err
 			}
 		}
-	}
-	return out
+		return nil
+	})
 }
 
-// Slot returns the UUID-stringified ids currently in a slot. Used by the
-// /internal/wheel/slots/{mm}/{ss} admin endpoint; binary ids are never exposed.
-func (w *Wheel) Slot(slot Slot) []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	ids := w.slots[slot.Min][slot.Sec]
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, uuid.UUID(id).String())
+// size returns how many schedules the wheel holds.
+func (w *wheel) size() (int, error) {
+	var n int
+	err := w.db.View(func(tx *bolt.Tx) error {
+		n = tx.Bucket(schedulesBucket).Stats().KeyN
+		return nil
+	})
+	return n, err
+}
+
+// fireAt is the Unix second a schedule due at deliverAt fires in. It rounds up:
+// the wheel ticks once a second, and a schedule may fire late but never early.
+func fireAt(deliverAt time.Time) int64 {
+	sec := deliverAt.Unix()
+	if deliverAt.Nanosecond() > 0 {
+		sec++
 	}
-	return out
+	return sec
+}
+
+func wheelKey(fireAt int64, id uuid.UUID) []byte {
+	return append(binary.BigEndian.AppendUint64(nil, uint64(fireAt)), id[:]...)
+}
+
+func scheduleIDOf(key []byte) (uuid.UUID, error) {
+	if len(key) != 8+16 {
+		return uuid.Nil, errors.New("malformed wheel key")
+	}
+	return uuid.FromBytes(key[8:])
 }

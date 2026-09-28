@@ -1,0 +1,36 @@
+{{- if .Values.services.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retry-consumer
+  labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: retry-consumer}
+spec:
+  replicas: {{ .Values.retryConsumer.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/component: retry-consumer}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/part-of: hatch, app.kubernetes.io/component: retry-consumer}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.retryConsumer.port | quote }}
+    spec:
+      initContainers:
+        {{- include "hatch.waitFor" (list . "kafka") | nindent 8 }}
+      containers:
+        - name: retry-consumer
+          image: {{ index .Values.images "retry-consumer" }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: {{ .Values.retryConsumer.port }}}
+          envFrom:
+            - secretRef: {name: hatch-secrets}
+          env:
+            - {name: PORT, value: {{ .Values.retryConsumer.port | quote }}}
+            - {name: RETRY_INTERVALS, value: {{ .Values.retryConsumer.intervals | quote }}}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 10}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+{{- end }}

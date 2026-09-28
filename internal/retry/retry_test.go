@@ -4,127 +4,72 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
-	"github.com/mdhishaamakhtar/hatch/pkg/kafka"
+	"github.com/google/uuid"
+	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
-// fakeProducer records the records it's asked to produce and can be made to fail.
 type fakeProducer struct {
-	got     []*kgo.Record
-	failErr error
+	err      error
+	produced []*kgo.Record
 }
 
-func (f *fakeProducer) Produce(_ context.Context, r *kgo.Record) error {
-	f.got = append(f.got, r)
-	return f.failErr
+func (f *fakeProducer) ProduceSync(_ context.Context, rs ...*kgo.Record) kgo.ProduceResults {
+	var out kgo.ProduceResults
+	for _, r := range rs {
+		f.produced = append(f.produced, r)
+		out = append(out, kgo.ProduceResult{Record: r, Err: f.err})
+	}
+	return out
 }
 
-// testTracer installs a real (in-memory) tracer so Inject/Extract have
-// something to encode; the drainer's tracing is part of what's under test.
-func testTracer() {
+func testDrainer(p producer) *drainer {
+	return &drainer{tier: kafka.RetryTiers[0], producer: p, lg: zap.NewNop()}
+}
+
+func TestReEnqueueMovesRecordsToEmailsDue(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())))
-}
+	ctx, span := sdktrace.NewTracerProvider().Tracer("test").Start(context.Background(), "delivery attempt")
+	defer span.End()
+	id := uuid.New()
+	parked := kafka.DueRecord(ctx, kafka.RetryTiers[0].Topic, id)
 
-func testDrainer(producer kafka.Producer) *Drainer {
-	testTracer()
-	tier := Tier{Name: "1min", Topic: kafka.TopicRetry1Min, Group: "g"}
-	return NewDrainer(tier, nil, producer, otel.Tracer("test"), zap.NewNop(), Config{})
-}
-
-func TestTiersAreDerivedFromConfig(t *testing.T) {
-	cfg := Config{
-		ConsumerGroupPrefix: "retry-consumer",
-		Interval1Min:        time.Minute,
-		Interval5Min:        5 * time.Minute,
-		Interval30Min:       30 * time.Minute,
-	}
-	want := []Tier{
-		{Name: "1min", Topic: kafka.TopicRetry1Min, Group: "retry-consumer-1min", Interval: time.Minute},
-		{Name: "5min", Topic: kafka.TopicRetry5Min, Group: "retry-consumer-5min", Interval: 5 * time.Minute},
-		{Name: "30min", Topic: kafka.TopicRetry30Min, Group: "retry-consumer-30min", Interval: 30 * time.Minute},
-	}
-
-	got := cfg.Tiers()
-
-	if len(got) != len(want) {
-		t.Fatalf("got %d tiers, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("tier %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
-func TestReEnqueueRecordRetargetsWithoutMutating(t *testing.T) {
-	in := &kgo.Record{Topic: kafka.TopicRetry5Min, Key: []byte("k"), Value: []byte(`{"schedule_id":"abc"}`)}
-
-	out := reEnqueueRecord(in)
-
-	if out.Topic != kafka.TopicEmailsDue {
-		t.Errorf("topic = %q, want %q", out.Topic, kafka.TopicEmailsDue)
-	}
-	if string(out.Key) != "k" || string(out.Value) != `{"schedule_id":"abc"}` {
-		t.Errorf("key/value not preserved: key=%q value=%q", out.Key, out.Value)
-	}
-	// franz-go reuses record buffers, so the copy has to be real.
-	in.Key[0] = 'x'
-	if out.Key[0] == 'x' {
-		t.Error("output key aliases the input; want a copy")
-	}
-}
-
-func TestReEnqueueProducesToEmailsDueWithTraceContext(t *testing.T) {
 	prod := &fakeProducer{}
-	d := testDrainer(prod)
-	recs := []*kgo.Record{
-		{Topic: kafka.TopicRetry1Min, Key: []byte("1"), Value: kafka.MarshalDuePayload("a")},
-		{Topic: kafka.TopicRetry1Min, Key: []byte("2"), Value: kafka.MarshalDuePayload("b")},
+	if !testDrainer(prod).reEnqueue(context.Background(), []*kgo.Record{parked, {Value: []byte("garbage")}}) {
+		t.Fatal("reEnqueue reported a failure")
 	}
 
-	if ok := d.reEnqueue(context.Background(), recs); !ok {
-		t.Fatal("reEnqueue reported failure on a clean produce")
+	if len(prod.produced) != 1 {
+		t.Fatalf("produced %d records, want the one readable record", len(prod.produced))
 	}
-
-	if len(prod.got) != 2 {
-		t.Fatalf("produced %d records, want 2", len(prod.got))
+	out := prod.produced[0]
+	if got, _ := kafka.ScheduleID(out); out.Topic != kafka.TopicDue || got != id {
+		t.Errorf("produced %s to %s, want %s to %s", got, out.Topic, id, kafka.TopicDue)
 	}
-	for _, r := range prod.got {
-		if r.Topic != kafka.TopicEmailsDue {
-			t.Errorf("re-enqueued to %q, want emails.due", r.Topic)
-		}
-		// Without the header the retry is a disconnected trace and you can't see
-		// which delivery attempt it came from.
-		if !hasHeader(r, "traceparent") {
-			t.Error("re-enqueued record is missing its traceparent header")
-		}
+	// The retry continues the trace of the attempt that failed.
+	if got := trace.SpanContextFromContext(kafka.ExtractTrace(context.Background(), out)); got.TraceID() != span.SpanContext().TraceID() {
+		t.Errorf("trace %s, want %s", got.TraceID(), span.SpanContext().TraceID())
 	}
 }
 
-// A produce failure must leave the batch uncommitted so the tier re-drains it
-// next cycle — at-least-once, with Redis idempotency absorbing the duplicate.
-func TestReEnqueueReportsFailureSoOffsetsAreNotCommitted(t *testing.T) {
-	prod := &fakeProducer{failErr: errors.New("broker down")}
-	d := testDrainer(prod)
-	recs := []*kgo.Record{{Topic: kafka.TopicRetry1Min, Value: kafka.MarshalDuePayload("a")}}
-
-	if ok := d.reEnqueue(context.Background(), recs); ok {
-		t.Fatal("reEnqueue reported success despite a produce error")
+// A failed produce must be reported, so the drain leaves the batch
+// uncommitted for the next cycle.
+func TestReEnqueueReportsFailures(t *testing.T) {
+	prod := &fakeProducer{err: errors.New("broker down")}
+	parked := kafka.DueRecord(context.Background(), kafka.RetryTiers[0].Topic, uuid.New())
+	if testDrainer(prod).reEnqueue(context.Background(), []*kgo.Record{parked}) {
+		t.Fatal("reEnqueue reported success despite the produce failing")
 	}
 }
 
-func hasHeader(r *kgo.Record, key string) bool {
-	for _, h := range r.Headers {
-		if h.Key == key {
-			return true
-		}
+func TestNewRequiresAnIntervalPerTier(t *testing.T) {
+	if _, err := New(Config{Intervals: nil}, zap.NewNop(), nil); err == nil {
+		t.Fatal("New accepted a config without intervals")
 	}
-	return false
 }

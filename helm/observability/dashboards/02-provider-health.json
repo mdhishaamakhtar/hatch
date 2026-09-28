@@ -81,10 +81,10 @@
     },
     {
       "type": "timeseries",
-      "title": "Leaky-bucket tokens per provider",
+      "title": "Sends deferred without a provider call",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "targets": [ { "refId": "A", "expr": "hatch_delivery_leaky_bucket_tokens", "legendFormat": "{{provider}}" } ]
+      "targets": [ { "refId": "A", "expr": "sum(rate(hatch_delivery_deferred_total[5m])) by (reason)", "legendFormat": "{{reason}}" } ]
     }
   ]
 }

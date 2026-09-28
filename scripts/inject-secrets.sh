@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
-# Builds the hatch-secrets k8s Secret from .env and applies it into both
-# `hatch` and `observability` namespaces. Strips every HOST_* key first —
-# those are localhost values for host-side dev tools, NOT for in-cluster
-# services. Cluster services must talk via ClusterDNS only.
+# Puts .env into the hatch-secrets Secret, which every Hatch pod loads as its
+# environment. HOST_* keys are left out: they are localhost addresses, for
+# tools on this machine.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_FILE="${ROOT}/.env"
-
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "missing $ENV_FILE (copy .env.example to .env first)" >&2
+if [[ ! -f "$ROOT/.env" ]]; then
+  echo "missing $ROOT/.env (copy .env.example to .env first)" >&2
   exit 1
 fi
 
-# Filter: drop blank/comment lines and any key starting with HOST_.
-CLUSTER_ENV="$(mktemp)"
-trap 'rm -f "$CLUSTER_ENV"' EXIT
-grep -Ev '^\s*(#|HOST_|$)' "$ENV_FILE" > "$CLUSTER_ENV"
+env_file="$(mktemp)"
+trap 'rm -f "$env_file"' EXIT
+grep -Ev '^\s*(#|HOST_|$)' "$ROOT/.env" > "$env_file"
 
-apply() {
-  local ns="$1"
-  kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
-  kubectl -n "$ns" create secret generic hatch-secrets \
-    --from-env-file="$CLUSTER_ENV" \
-    --dry-run=client -o yaml | kubectl apply -f -
-}
-
-apply hatch
-apply observability
+kubectl get namespace hatch >/dev/null 2>&1 || kubectl create namespace hatch
+kubectl -n hatch create secret generic hatch-secrets --from-env-file="$env_file" --dry-run=client -o yaml |
+  kubectl apply -f -

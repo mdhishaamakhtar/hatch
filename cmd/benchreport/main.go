@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -49,7 +48,6 @@ func run(inDir, outDir string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("no result files in %s", inDir)
 	}
-	sort.Strings(paths)
 
 	ref := reference{
 		GeneratedAt: time.Now().UTC(),

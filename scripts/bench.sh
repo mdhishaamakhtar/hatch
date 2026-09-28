@@ -116,7 +116,7 @@ run_point() {
   BENCH_IMAGE="$BENCH_IMAGE" \
   BENCH_SCENARIO="$scenario" BENCH_COUNT="$count" BENCH_WORKERS="$workers" \
   BENCH_SPREAD="$spread" BENCH_LABEL="$label" \
-  BENCH_SCHEDULER_REPLICAS="$sched_replicas" \
+  SCHEDULER_REPLICAS="$sched_replicas" \
   BENCH_SCHEDULE_LEAD="${BENCH_SCHEDULE_LEAD:-2m30s}" \
   BENCH_GIT_COMMIT="$BENCH_COMMIT" \
   BENCH_REPLICAS="$(replica_summary)" \
@@ -147,7 +147,7 @@ run_point() {
 restore_defaults() {
   log "Restoring chart defaults"
   kubectl -n "$NS" set env deployment/delivery-worker \
-    DELIVERY_SEND_CONCURRENCY- MOCK_PROVIDER_LATENCY_MS- >/dev/null 2>&1
+    DELIVERY_SEND_CONCURRENCY- MOCK_PROVIDER_LATENCY- >/dev/null 2>&1
   scale delivery-worker 1
   note "delivery-worker back to 1 replica, env overrides cleared"
 }

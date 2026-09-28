@@ -1,55 +1,43 @@
-// reconciliation-cron — Hatch's crash-recovery cron. Sweeps Postgres on an
-// interval for schedule rows stranded by a crash and re-enqueues them onto
-// emails.due. Runs as a long-lived Deployment (not a CronJob) so Prometheus can
-// scrape its /metrics between sweeps. See internal/recon for the two passes.
+// Command reconciliation-cron periodically puts schedules that a crash left
+// stranded back on emails.due. It is a long-running process rather than a
+// CronJob so that Prometheus can scrape it between sweeps.
 package main
 
 import (
-	"fmt"
+	"context"
 
-	"github.com/mdhishaamakhtar/hatch/gen"
+	"github.com/caarlos0/env/v11"
+	"github.com/mdhishaamakhtar/hatch/internal/db"
+	"github.com/mdhishaamakhtar/hatch/internal/httpx"
+	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/mdhishaamakhtar/hatch/internal/recon"
-	"github.com/mdhishaamakhtar/hatch/pkg/config"
-	"github.com/mdhishaamakhtar/hatch/pkg/db"
-	hkafka "github.com/mdhishaamakhtar/hatch/pkg/kafka"
-	"github.com/mdhishaamakhtar/hatch/pkg/service"
-	"go.opentelemetry.io/otel"
+	"github.com/mdhishaamakhtar/hatch/internal/service"
 	"go.uber.org/zap"
 )
 
-func main() { service.Main("reconciliation-cron", run) }
+func main() {
+	service.Run("reconciliation-cron", func(ctx context.Context, lg *zap.Logger) error {
+		cfg, err := env.ParseAs[recon.Config]()
+		if err != nil {
+			return err
+		}
+		pool, err := db.Connect(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		producer, err := kafka.NewProducer(cfg.KafkaBrokers, lg)
+		if err != nil {
+			return err
+		}
+		defer producer.Close()
 
-func run(lg *zap.Logger) error {
-	cfg, err := config.Load[recon.Config]()
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
-	}
-
-	ctx, cancel := service.SignalContext()
-	defer cancel()
-
-	flushTraces, err := service.InitTracer(ctx, lg, "reconciliation-cron", cfg.OTLPEndpoint)
-	if err != nil {
-		return err
-	}
-	defer flushTraces()
-	tr := otel.Tracer("reconciliation-cron")
-
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("db pool: %w", err)
-	}
-	defer pool.Close()
-
-	prodCl, err := hkafka.NewProducer(cfg.Brokers(), lg)
-	if err != nil {
-		return fmt.Errorf("kafka producer: %w", err)
-	}
-	defer prodCl.Close()
-
-	go recon.Run(ctx, cfg, gen.New(pool), hkafka.NewRecordProducer(prodCl), tr, lg)
-
-	return service.Serve(ctx, lg, "reconciliation-cron", cfg.AdminPort,
-		recon.AdminHandler(pool, prodCl), cfg.ShutdownTimeout,
-		zap.Duration("interval", cfg.Interval))
+		health := httpx.NewRouter(
+			httpx.Check{Name: "postgres", Ping: pool.Ping},
+			httpx.Check{Name: "kafka", Ping: producer.Ping},
+		)
+		return service.Serve(ctx, lg, cfg.Port, health, func(ctx context.Context) {
+			recon.Run(ctx, cfg.Interval, lg, db.New(pool), producer)
+		})
+	})
 }
