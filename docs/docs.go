@@ -17,11 +17,6 @@ const docTemplate = `{
     "paths": {
         "/admin/clients": {
             "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
                 "consumes": [
                     "application/json"
                 ],
@@ -62,16 +57,16 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            }
-        },
-        "/admin/clients/{client_id}": {
-            "delete": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            }
+        },
+        "/admin/clients/{client_id}": {
+            "delete": {
                 "tags": [
                     "admin"
                 ],
@@ -101,16 +96,16 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            }
-        },
-        "/admin/clients/{client_id}/providers": {
-            "post": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            }
+        },
+        "/admin/clients/{client_id}/providers": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
@@ -164,16 +159,16 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            }
-        },
-        "/admin/clients/{client_id}/providers/{vendor}": {
-            "delete": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            }
+        },
+        "/admin/clients/{client_id}/providers/{vendor}": {
+            "delete": {
                 "tags": [
                     "admin"
                 ],
@@ -214,16 +209,16 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            }
-        },
-        "/v1/schedules": {
-            "post": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            }
+        },
+        "/v1/schedules": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
@@ -288,16 +283,16 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            }
-        },
-        "/v1/schedules/{schedule_id}": {
-            "get": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            }
+        },
+        "/v1/schedules/{schedule_id}": {
+            "get": {
                 "produces": [
                     "application/json"
                 ],
@@ -339,14 +334,14 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
-            },
-            "delete": {
+                },
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
+                ]
+            },
+            "delete": {
                 "produces": [
                     "application/json"
                 ],
@@ -391,7 +386,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorBody"
                         }
                     }
-                }
+                },
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ]
             }
         }
     },

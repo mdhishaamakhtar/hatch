@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 )
@@ -109,22 +109,22 @@ func (s *Stack) API(ctx context.Context, method, path, bearer string, body any) 
 func (s *Stack) NewClient(ctx context.Context, name string, maxRPS int, vendor string, creds any) (id uuid.UUID, key string, err error) {
 	resp, err := s.API(ctx, http.MethodPost, "/admin/clients", s.AdminKey, map[string]any{"name": name, "max_rps": maxRPS})
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil(), "", err
 	}
 	if resp.Code != http.StatusCreated {
-		return uuid.Nil, "", fmt.Errorf("create client: %d %s", resp.Code, resp.Body)
+		return uuid.Nil(), "", fmt.Errorf("create client: %d %s", resp.Code, resp.Body)
 	}
 	if id, err = uuid.Parse(resp.Field("client_id")); err != nil {
-		return uuid.Nil, "", fmt.Errorf("create client: %w", err)
+		return uuid.Nil(), "", fmt.Errorf("create client: %w", err)
 	}
 	key = resp.Field("api_key")
 	resp, err = s.API(ctx, http.MethodPost, "/admin/clients/"+id.String()+"/providers", s.AdminKey,
 		map[string]any{"vendor": vendor, "credentials": creds})
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil(), "", err
 	}
 	if resp.Code != http.StatusCreated {
-		return uuid.Nil, "", fmt.Errorf("register %s provider: %d %s", vendor, resp.Code, resp.Body)
+		return uuid.Nil(), "", fmt.Errorf("register %s provider: %d %s", vendor, resp.Code, resp.Body)
 	}
 	return id, key, nil
 }

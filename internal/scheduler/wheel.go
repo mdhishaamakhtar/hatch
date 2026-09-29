@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	bolt "go.etcd.io/bbolt"
 )
@@ -62,11 +63,10 @@ func (w *wheel) load(rows []db.ListDueRow, until time.Time) error {
 	return w.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(schedulesBucket)
 		for _, row := range rows {
-			id, err := uuid.FromBytes(row.ID)
-			if err != nil {
-				return err
+			if len(row.ID) != len(uuid.UUID{}) {
+				return fmt.Errorf("malformed schedule id %x", row.ID)
 			}
-			if err := b.Put(wheelKey(fireAt(row.DeliverAt), id), nil); err != nil {
+			if err := b.Put(wheelKey(fireAt(row.DeliverAt), uuid.UUID(row.ID)), nil); err != nil {
 				return err
 			}
 		}
@@ -90,7 +90,7 @@ func (w *wheel) loadedUntil() (time.Time, error) {
 
 // due returns the key of every schedule that fires at or before now.
 func (w *wheel) due(now time.Time) ([][]byte, error) {
-	limit := wheelKey(now.Unix()+1, uuid.Nil)
+	limit := wheelKey(now.Unix()+1, uuid.Nil())
 	var keys [][]byte
 	err := w.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(schedulesBucket).Cursor()
@@ -142,7 +142,7 @@ func wheelKey(fireAt int64, id uuid.UUID) []byte {
 
 func scheduleIDOf(key []byte) (uuid.UUID, error) {
 	if len(key) != 8+16 {
-		return uuid.Nil, errors.New("malformed wheel key")
+		return uuid.Nil(), errors.New("malformed wheel key")
 	}
-	return uuid.FromBytes(key[8:])
+	return uuid.UUID(key[8:]), nil
 }

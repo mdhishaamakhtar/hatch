@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/archival"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"

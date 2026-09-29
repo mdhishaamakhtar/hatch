@@ -5,7 +5,7 @@ to years in advance, with at-least-once delivery and pluggable email providers.
 
 ## Tech Stack
 
-[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Orchestration-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Helm](https://img.shields.io/badge/Helm-4-0F1689?style=for-the-badge&logo=helm&logoColor=white)](https://helm.sh/)
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-3.9_KRaft-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
@@ -33,7 +33,7 @@ on [Notion](https://ruby-spectacles-2bc.notion.site/Hatch-34123f950a298115a7cec9
 Prerequisites:
 
 - Docker Desktop with Kubernetes enabled (Settings → Kubernetes → Enable)
-- `go` 1.26 or later
+- `go` 1.27 or later
 - `helm` (`brew install helm`)
 - `kubectl` (bundled with Docker Desktop)
 - `sqlc` (`brew install sqlc`), to regenerate `internal/db`

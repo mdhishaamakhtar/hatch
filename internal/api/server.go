@@ -6,7 +6,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"mime"
@@ -14,10 +14,10 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mdhishaamakhtar/hatch/internal/crypto"
@@ -226,7 +226,9 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 }
 
 // decode reads a JSON body of at most limit bytes into v. When it can't, it
-// answers the request itself and returns false.
+// answers the request itself and returns false. It uses encoding/json/v2,
+// which matches member names exactly and rejects the duplicate names and
+// invalid UTF-8 that encoding/json lets through.
 func decode(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		if mediaType, _, _ := mime.ParseMediaType(ct); mediaType != "application/json" {
@@ -258,7 +260,7 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (uuid.UUID, boo
 	id, err := uuid.Parse(chi.URLParam(r, name))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, codeValidation, name+"_invalid")
-		return uuid.Nil, false
+		return uuid.Nil(), false
 	}
 	return id, true
 }

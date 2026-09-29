@@ -7,29 +7,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
-	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/resend/resend-go/v2"
+	"github.com/resend/resend-go/v3"
 )
 
 // resendServer points a resend provider at a test server that answers every
-// request with status and records the request body.
+// request with status and records the request body. The server's client
+// routes every request to it over an in-memory network, so the SDK keeps its
+// real base URL and nothing leaves the process.
 func resendServer(t *testing.T, status int) (*resendProvider, *map[string]any) {
 	t.Helper()
 	var got map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"id":"abc","message":"test"}`))
 	}))
-	t.Cleanup(srv.Close)
-
-	c := resend.NewClient("re_test")
-	c.BaseURL, _ = url.Parse(srv.URL + "/")
-	return &resendProvider{client: c}, &got
+	return &resendProvider{client: resend.NewCustomClient(srv.Client(), "re_test")}, &got
 }
 
 func TestResendErrorClassification(t *testing.T) {

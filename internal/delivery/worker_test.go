@@ -6,9 +6,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/mdhishaamakhtar/hatch/internal/provider"
@@ -405,27 +406,30 @@ func TestBatchStopsStartingSendsAtShutdown(t *testing.T) {
 }
 
 // Sends are nearly all waiting on the provider, so a batch has to overlap
-// them, up to the configured concurrency and never beyond it.
+// them, up to the configured concurrency and never beyond it. The bubble's
+// fake clock makes the timing exact: rows/concurrency rounds of one hold each.
 func TestBatchSendsConcurrentlyUpToTheLimit(t *testing.T) {
-	const rows, concurrency = 24, 4
-	h := newHarness()
-	h.prov.hold = 20 * time.Millisecond
-	h.w.concurrency = concurrency
-	for range rows {
-		h.store.rows = append(h.store.rows, testRow(0, db.ScheduleStatusPending))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		const rows, concurrency = 24, 4
+		h := newHarness()
+		h.prov.hold = time.Second
+		h.w.concurrency = concurrency
+		for range rows {
+			h.store.rows = append(h.store.rows, testRow(0, db.ScheduleStatusPending))
+		}
 
-	start := time.Now()
-	h.w.processBatch(context.Background(), dueRecords(h.store.rows))
-	elapsed := time.Since(start)
+		start := time.Now()
+		h.w.processBatch(t.Context(), dueRecords(h.store.rows))
+		elapsed := time.Since(start)
 
-	if len(h.store.delivered) != rows {
-		t.Errorf("delivered %d of %d", len(h.store.delivered), rows)
-	}
-	if h.prov.peak != concurrency {
-		t.Errorf("peak concurrent sends = %d, want %d", h.prov.peak, concurrency)
-	}
-	if serial := rows * h.prov.hold; elapsed > serial/2 {
-		t.Errorf("batch took %s, a serial batch would take %s", elapsed, serial)
-	}
+		if len(h.store.delivered) != rows {
+			t.Errorf("delivered %d of %d", len(h.store.delivered), rows)
+		}
+		if h.prov.peak != concurrency {
+			t.Errorf("peak concurrent sends = %d, want %d", h.prov.peak, concurrency)
+		}
+		if want := rows / concurrency * h.prov.hold; elapsed != want {
+			t.Errorf("batch took %s, want %s (a serial batch would take %s)", elapsed, want, rows*h.prov.hold)
+		}
+	})
 }

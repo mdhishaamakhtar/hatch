@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"

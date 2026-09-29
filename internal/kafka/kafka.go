@@ -8,8 +8,8 @@ package kafka
 
 import (
 	"context"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/plugin/kotel"
 	"github.com/twmb/franz-go/plugin/kzap"
@@ -45,7 +45,9 @@ func DueRecord(ctx context.Context, topic string, id uuid.UUID) *kgo.Record {
 
 // ScheduleID returns the schedule a record built by DueRecord refers to.
 func ScheduleID(r *kgo.Record) (uuid.UUID, error) {
-	return uuid.ParseBytes(r.Value)
+	var id uuid.UUID
+	err := id.UnmarshalText(r.Value)
+	return id, err
 }
 
 // ExtractTrace returns ctx carrying the trace that produced r.

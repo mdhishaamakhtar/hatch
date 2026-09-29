@@ -13,8 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/mdhishaamakhtar/hatch/internal/stack"
@@ -84,7 +84,7 @@ func Run(ctx context.Context, lg *zap.Logger, cfg Config) error {
 	}
 	defer producer.Close()
 
-	v := &verifier{Stack: st, cfg: cfg, lg: lg, redis: redis, producer: producer, runID: "verify-" + uuid.NewString()}
+	v := &verifier{Stack: st, cfg: cfg, lg: lg, redis: redis, producer: producer, runID: "verify-" + uuid.New().String()}
 	fmt.Println("Verifying Hatch, run", v.runID)
 	for _, check := range []func(context.Context){
 		v.checkFoundation,
@@ -174,10 +174,10 @@ func (v *verifier) email(deliverAt time.Time, to string) map[string]any {
 func (v *verifier) createSchedule(ctx context.Context, key string, email map[string]any) (uuid.UUID, error) {
 	resp, err := v.API(ctx, http.MethodPost, "/v1/schedules", key, email)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil(), err
 	}
 	if resp.Code != http.StatusCreated {
-		return uuid.Nil, fmt.Errorf("%d %s", resp.Code, resp.Body)
+		return uuid.Nil(), fmt.Errorf("%d %s", resp.Code, resp.Body)
 	}
 	return uuid.Parse(resp.Field("schedule_id"))
 }

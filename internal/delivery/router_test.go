@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/provider"
 	"github.com/sony/gobreaker/v2"
 	"golang.org/x/time/rate"
@@ -115,19 +116,20 @@ func TestPickPrefersTheMostHeadroom(t *testing.T) {
 // the probe already taken was never attempted, so it must be deferred rather
 // than reported as a provider failure.
 func TestSendDefersWhileTheHalfOpenProbeIsTaken(t *testing.T) {
-	probe := &blockingProvider{entered: make(chan struct{}), release: make(chan struct{})}
-	r := testRouter(probe, 100)
-	r.breaker.Timeout = 10 * time.Millisecond
-	tripBreaker(r, "mock")
-	time.Sleep(20 * time.Millisecond) // past Timeout: the breaker half-opens on its next use
+	synctest.Test(t, func(t *testing.T) {
+		probe := &blockingProvider{entered: make(chan struct{}), release: make(chan struct{})}
+		r := testRouter(probe, 100)
+		tripBreaker(r, "mock")
+		time.Sleep(r.breaker.Timeout + time.Second) // past Timeout: the breaker half-opens on its next use
 
-	go func() { _, _ = r.send(context.Background(), testClient, vendors("mock"), "", provider.Email{}) }()
-	<-probe.entered
-	defer close(probe.release)
+		go func() { _, _ = r.send(t.Context(), testClient, vendors("mock"), "", provider.Email{}) }()
+		<-probe.entered
+		defer close(probe.release)
 
-	if _, err := r.send(context.Background(), testClient, vendors("mock"), "", provider.Email{}); !errors.Is(err, errBreakerOpen) {
-		t.Fatalf("err = %v, want errBreakerOpen", err)
-	}
+		if _, err := r.send(t.Context(), testClient, vendors("mock"), "", provider.Email{}); !errors.Is(err, errBreakerOpen) {
+			t.Fatalf("err = %v, want errBreakerOpen", err)
+		}
+	})
 }
 
 func TestProviderIsRebuiltWhenCredentialsChange(t *testing.T) {

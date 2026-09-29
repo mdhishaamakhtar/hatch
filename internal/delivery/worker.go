@@ -12,8 +12,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mdhishaamakhtar/hatch/internal/crypto"
 	"github.com/mdhishaamakhtar/hatch/internal/db"

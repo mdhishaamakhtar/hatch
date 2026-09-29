@@ -8,9 +8,9 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/httpx"
@@ -76,7 +76,7 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	rand.Read(secret)
 	apiKey := base64.RawURLEncoding.EncodeToString(secret)
 	digest := sha256.Sum256([]byte(apiKey))
-	id := uuid.Must(uuid.NewV7())
+	id := uuid.NewV7()
 	err := s.queries.CreateClient(r.Context(), db.CreateClientParams{ID: id[:], Name: in.Name, ApiKeyLookup: digest[:], MaxRps: in.MaxRPS})
 	if err != nil {
 		s.internalError(w, r, "create client", err)
@@ -152,7 +152,7 @@ func (s *Server) upsertProvider(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, "encrypt credentials", err)
 		return
 	}
-	newID := uuid.Must(uuid.NewV7())
+	newID := uuid.NewV7()
 	providerID, err := s.queries.UpsertClientProvider(r.Context(), db.UpsertClientProviderParams{
 		ID: newID[:], ClientID: clientID[:], Vendor: in.Vendor, Credentials: sealed,
 	})

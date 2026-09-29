@@ -2,8 +2,7 @@ package db
 
 import (
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // NewScheduleID returns a UUIDv7 stamped with deliverAt instead of the current
@@ -13,7 +12,7 @@ import (
 // its partition too. deliverAt is kept to the millisecond, the resolution the
 // API accepts it in.
 func NewScheduleID(deliverAt time.Time) uuid.UUID {
-	id := uuid.Must(uuid.NewV7())
+	id := uuid.NewV7()
 	// A UUIDv7 starts with its timestamp: 48 bits of Unix milliseconds.
 	ms := deliverAt.UnixMilli()
 	for i := range 6 {

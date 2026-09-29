@@ -4,48 +4,43 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 func TestEveryRunsImmediatelyThenOnTheInterval(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	var runs atomic.Int32
-	done := make(chan struct{})
-	go func() {
-		Every(ctx, time.Millisecond, func(context.Context) { runs.Add(1) })
-		close(done)
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		var runs atomic.Int32
+		done := make(chan struct{})
+		go func() {
+			Every(ctx, time.Minute, func(context.Context) { runs.Add(1) })
+			close(done)
+		}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for runs.Load() < 3 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if runs.Load() < 3 {
-		t.Fatalf("ran %d times, want repeated runs", runs.Load())
-	}
+		synctest.Sleep(2 * time.Minute)
+		if got := runs.Load(); got != 3 {
+			t.Fatalf("ran %d times in two intervals, want 3 (once at the start, once per tick)", got)
+		}
 
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Every did not return after its context was cancelled")
-	}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Every did not return after its context was cancelled")
+		}
+	})
 }
 
 func TestEveryDoesNotWaitForTheFirstTick(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ran := make(chan struct{}, 1)
-	go Every(ctx, time.Hour, func(context.Context) {
-		select {
-		case ran <- struct{}{}:
-		default:
+	synctest.Test(t, func(t *testing.T) {
+		var runs atomic.Int32
+		go Every(t.Context(), time.Hour, func(context.Context) { runs.Add(1) })
+
+		synctest.Wait()
+		if runs.Load() != 1 {
+			t.Fatal("fn did not run before the first tick")
 		}
 	})
-
-	select {
-	case <-ran:
-	case <-time.After(2 * time.Second):
-		t.Fatal("fn did not run before the first tick")
-	}
 }

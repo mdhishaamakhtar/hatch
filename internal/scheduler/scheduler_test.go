@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -70,18 +71,6 @@ func newTestScheduler(t *testing.T, lister dueLister, prod producer) *Scheduler 
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
-}
-
-// eventually polls cond instead of sleeping a fixed time, so the tests stay fast.
-func eventually(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met within 2s")
-		}
-		time.Sleep(time.Millisecond)
-	}
 }
 
 func TestNewRejectsAShardOutsideThePods(t *testing.T) {
@@ -188,39 +177,46 @@ func TestFireKeepsWhatKafkaRejectedForTheNextTick(t *testing.T) {
 // A restarted pod resumes loading from the end of what it loaded before, so
 // schedules that came due while it was down are still found.
 func TestPollerResumesFromTheWheelsWatermark(t *testing.T) {
-	lister := &fakeLister{}
-	s := newTestScheduler(t, lister, &fakeProducer{})
-	loadedUntil := time.Now().Add(-10 * time.Minute)
-	if err := s.wheel.load(nil, loadedUntil); err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		lister := &fakeLister{}
+		s := newTestScheduler(t, lister, &fakeProducer{})
+		loadedUntil := time.Now().Add(-10 * time.Minute)
+		if err := s.wheel.load(nil, loadedUntil); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go s.runPoller(ctx)
+		go s.runPoller(t.Context())
+		synctest.Wait()
 
-	var first db.ListDueParams
-	eventually(t, func() bool { p, ok := lister.call(0); first = p; return ok })
-	if !first.After.Equal(loadedUntil) {
-		t.Errorf("first poll after restart starts at %v, want the stored watermark %v", first.After, loadedUntil)
-	}
+		first, ok := lister.call(0)
+		if !ok {
+			t.Fatal("the poller did not poll on start")
+		}
+		if !first.After.Equal(loadedUntil) {
+			t.Errorf("first poll after restart starts at %v, want the stored watermark %v", first.After, loadedUntil)
+		}
+	})
 }
 
 // An on-demand poll rescans from now, where an hourly one would start at the
 // watermark and miss schedules created since their window was loaded.
 func TestOnDemandPollRescansFromNow(t *testing.T) {
-	lister := &fakeLister{}
-	s := newTestScheduler(t, lister, &fakeProducer{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go s.runPoller(ctx)
+	synctest.Test(t, func(t *testing.T) {
+		lister := &fakeLister{}
+		s := newTestScheduler(t, lister, &fakeProducer{})
+		go s.runPoller(t.Context())
+		synctest.Wait()
 
-	eventually(t, func() bool { _, ok := lister.call(0); return ok })
-	s.pollNow <- struct{}{}
-	var second db.ListDueParams
-	eventually(t, func() bool { p, ok := lister.call(1); second = p; return ok })
+		s.pollNow <- struct{}{}
+		synctest.Wait()
 
-	if first, _ := lister.call(0); !second.After.Before(first.Until) {
-		t.Errorf("on-demand poll starts at %v, want a rescan from now, before the watermark %v", second.After, first.Until)
-	}
+		first, _ := lister.call(0)
+		second, ok := lister.call(1)
+		if !ok {
+			t.Fatal("the on-demand poll did not run")
+		}
+		if !second.After.Before(first.Until) {
+			t.Errorf("on-demand poll starts at %v, want a rescan from now, before the watermark %v", second.After, first.Until)
+		}
+	})
 }

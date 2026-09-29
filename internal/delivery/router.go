@@ -6,8 +6,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/crypto"
 	"github.com/mdhishaamakhtar/hatch/internal/provider"
 	"github.com/sony/gobreaker/v2"

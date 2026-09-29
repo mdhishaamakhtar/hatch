@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/mail"
 
-	"github.com/resend/resend-go/v2"
+	"github.com/resend/resend-go/v3"
 )
 
 // resendProvider sends through the Resend API with one client's own API key.

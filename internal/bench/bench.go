@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/stack"
 )
 
@@ -207,15 +208,16 @@ func errNothingCreated(load *LoadResult) error {
 	if load.Created > 0 {
 		return nil
 	}
-	detail := fmt.Sprintf("attempted=%d errors=%d rate_limited=%d", load.Attempted, load.Errors, load.RateLimited)
+	var detail strings.Builder
+	fmt.Fprintf(&detail, "attempted=%d errors=%d rate_limited=%d", load.Attempted, load.Errors, load.RateLimited)
 	for code, n := range load.OtherStatus {
-		detail += fmt.Sprintf(" http_%d=%d", code, n)
+		fmt.Fprintf(&detail, " http_%d=%d", code, n)
 	}
 	if load.OtherStatus[http.StatusBadRequest] > 0 {
-		detail += "\n  a 400 here is usually deliver_at inside the API's horizon:" +
-			" BENCH_SCHEDULE_LEAD must exceed API_MIN_SCHEDULE_HORIZON"
+		detail.WriteString("\n  a 400 here is usually deliver_at inside the API's horizon:" +
+			" BENCH_SCHEDULE_LEAD must exceed API_MIN_SCHEDULE_HORIZON")
 	}
-	return fmt.Errorf("no schedules were created; nothing to measure (%s)", detail)
+	return fmt.Errorf("no schedules were created; nothing to measure (%s)", detail.String())
 }
 
 func spreadLabel(d time.Duration) string {

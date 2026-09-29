@@ -45,7 +45,7 @@ func (v *verifier) checkFoundation(ctx context.Context) {
 	req := kmsg.NewPtrMetadataRequest()
 	for _, topic := range topics {
 		t := kmsg.NewMetadataRequestTopic()
-		t.Topic = kmsg.StringPtr(topic)
+		t.Topic = new(topic)
 		req.Topics = append(req.Topics, t)
 	}
 	resp, err := req.RequestWith(ctx, v.producer)

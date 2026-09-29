@@ -12,8 +12,8 @@ func TestScheduleIDCarriesDeliverAt(t *testing.T) {
 	if got := ScheduleDeliverAt(id); !got.Equal(deliverAt) {
 		t.Errorf("ScheduleDeliverAt = %v, want %v", got, deliverAt)
 	}
-	if id.Version() != 7 {
-		t.Errorf("version = %d, want a UUIDv7", id.Version())
+	if version := id[6] >> 4; version != 7 {
+		t.Errorf("version = %d, want a UUIDv7", version)
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"uuid"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -109,6 +109,8 @@ func TestDecode(t *testing.T) {
 		{"no content type", "", `{"name":"x"}`, http.StatusOK},
 		{"wrong content type", "text/plain", `{"name":"x"}`, http.StatusUnsupportedMediaType},
 		{"malformed", "application/json", `{"name":`, http.StatusBadRequest},
+		{"duplicate member", "application/json", `{"name":"x","name":"y"}`, http.StatusBadRequest},
+		{"invalid UTF-8", "application/json", "{\"name\":\"\xff\"}", http.StatusBadRequest},
 		{"too large", "application/json", `{"name":"` + strings.Repeat("x", 100) + `"}`, http.StatusRequestEntityTooLarge},
 	}
 	for _, c := range cases {

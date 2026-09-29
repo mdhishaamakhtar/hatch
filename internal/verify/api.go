@@ -5,8 +5,7 @@ import (
 	"context"
 	"net/http"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // checkAPI creates the client the rest of the audit schedules as, and takes one
@@ -21,7 +20,7 @@ func (v *verifier) checkAPI(ctx context.Context) {
 
 	// The provider's credentials carry a marker, which must not reach the
 	// database in the clear.
-	marker := "marker-" + uuid.NewString()
+	marker := "marker-" + uuid.New().String()
 	creds := map[string]string{"api_key": marker}
 	id, key, err := v.NewClient(ctx, v.runID, 50, "mock", creds)
 	if err != nil {

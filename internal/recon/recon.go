@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mdhishaamakhtar/hatch/internal/kafka"
 	"github.com/mdhishaamakhtar/hatch/internal/service"
 	"github.com/prometheus/client_golang/prometheus"

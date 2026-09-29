@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/mdhishaamakhtar/hatch/internal/db"
 	"github.com/redis/rueidis"
