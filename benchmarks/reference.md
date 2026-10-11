@@ -51,11 +51,6 @@ All checks passed.
 
 ### ingest — ingest, 8 concurrent clients
 
-```
-# Hatch benchmark — ingest
-
-**ingest, 8 concurrent clients**
-
 | | |
 |---|---|
 | Started | 2026-09-03T17:51:26Z |
@@ -66,7 +61,7 @@ All checks passed.
 | delivery-worker replicas | 1 |
 | retry-consumer replicas | 1 |
 
-## Ingest (client-observed)
+#### Ingest (client-observed)
 
 | Metric | Value |
 |---|---|
@@ -81,21 +76,15 @@ All checks passed.
 | Request p99 | 71ms |
 | Request max | 88ms |
 
-## Prometheus
+#### Prometheus
 
 | Metric | Value |
 |---|---|
 | api_rate_limited_total | 0.000 |
 | api_request_p95_seconds | 0.010 |
 | api_requests_total | 8539.242 |
-```
 
 ### ingest — ingest, 32 concurrent clients
-
-```
-# Hatch benchmark — ingest
-
-**ingest, 32 concurrent clients**
 
 | | |
 |---|---|
@@ -107,7 +96,7 @@ All checks passed.
 | delivery-worker replicas | 1 |
 | retry-consumer replicas | 1 |
 
-## Ingest (client-observed)
+#### Ingest (client-observed)
 
 | Metric | Value |
 |---|---|
@@ -122,21 +111,15 @@ All checks passed.
 | Request p99 | 80ms |
 | Request max | 89ms |
 
-## Prometheus
+#### Prometheus
 
 | Metric | Value |
 |---|---|
 | api_rate_limited_total | 0.000 |
 | api_request_p95_seconds | 0.087 |
 | api_requests_total | 8622.673 |
-```
 
 ### ingest — ingest, 128 concurrent clients
-
-```
-# Hatch benchmark — ingest
-
-**ingest, 128 concurrent clients**
 
 | | |
 |---|---|
@@ -148,7 +131,7 @@ All checks passed.
 | delivery-worker replicas | 1 |
 | retry-consumer replicas | 1 |
 
-## Ingest (client-observed)
+#### Ingest (client-observed)
 
 | Metric | Value |
 |---|---|
@@ -163,21 +146,15 @@ All checks passed.
 | Request p99 | 100ms |
 | Request max | 106ms |
 
-## Prometheus
+#### Prometheus
 
 | Metric | Value |
 |---|---|
 | api_rate_limited_total | 0.000 |
 | api_request_p95_seconds | 0.093 |
 | api_requests_total | 5705.263 |
-```
 
 ### delivery — 4 replicas, send concurrency 1
-
-```
-# Hatch benchmark — delivery
-
-**4 replicas, send concurrency 1**
 
 | | |
 |---|---|
@@ -189,7 +166,7 @@ All checks passed.
 | delivery-worker replicas | 4 |
 | retry-consumer replicas | 1 |
 
-## Ingest (client-observed)
+#### Ingest (client-observed)
 
 | Metric | Value |
 |---|---|
@@ -204,7 +181,7 @@ All checks passed.
 | Request p99 | 85ms |
 | Request max | 87ms |
 
-## Delivery
+#### Delivery
 
 | Metric | Value |
 |---|---|
@@ -214,7 +191,7 @@ All checks passed.
 | **Delivered/sec** | **20.35** |
 | Final states | pending=0 processing=0 retrying=0 delivered=800 failed=0 cancelled=0 |
 
-## End-to-end latency (deliver_at → delivered)
+#### End-to-end latency (deliver_at → delivered)
 
 | Quantile | Value |
 |---|---|
@@ -222,7 +199,7 @@ All checks passed.
 | p95 | 52.35s |
 | p99 | 58.47s |
 
-## Prometheus
+#### Prometheus
 
 | Metric | Value |
 |---|---|
@@ -235,25 +212,19 @@ All checks passed.
 | scheduler_produced_total | 910.147 |
 | sends_total | 422.413 |
 
-## Run integrity
+#### Run integrity
 
 | Check | Expected | Actual | |
 |---|---|---|---|
 | no stranded rows | 0 in flight | 0 | PASS |
 | every schedule accounted for | 800 rows | 800 rows | PASS |
 
-## Notes
+#### Notes
 
 - forced an out-of-band poll on 2 scheduler pod(s)
 - deliver_at spread: none (all schedules mature in a single wheel slot)
-```
 
 ### delivery — 4 replicas, send concurrency 8
-
-```
-# Hatch benchmark — delivery
-
-**4 replicas, send concurrency 8**
 
 | | |
 |---|---|
@@ -265,7 +236,7 @@ All checks passed.
 | delivery-worker replicas | 4 |
 | retry-consumer replicas | 1 |
 
-## Ingest (client-observed)
+#### Ingest (client-observed)
 
 | Metric | Value |
 |---|---|
@@ -280,7 +251,7 @@ All checks passed.
 | Request p99 | 87ms |
 | Request max | 91ms |
 
-## Delivery
+#### Delivery
 
 | Metric | Value |
 |---|---|
@@ -290,7 +261,7 @@ All checks passed.
 | **Delivered/sec** | **121.96** |
 | Final states | pending=0 processing=0 retrying=0 delivered=3000 failed=0 cancelled=0 |
 
-## End-to-end latency (deliver_at → delivered)
+#### End-to-end latency (deliver_at → delivered)
 
 | Quantile | Value |
 |---|---|
@@ -298,7 +269,7 @@ All checks passed.
 | p95 | 28.77s |
 | p99 | 29.754s |
 
-## Prometheus
+#### Prometheus
 
 | Metric | Value |
 |---|---|
@@ -312,15 +283,14 @@ All checks passed.
 | scheduler_produced_total | 3450.079 |
 | sends_total | 2675.667 |
 
-## Run integrity
+#### Run integrity
 
 | Check | Expected | Actual | |
 |---|---|---|---|
 | no stranded rows | 0 in flight | 0 | PASS |
 | every schedule accounted for | 3000 rows | 3000 rows | PASS |
 
-## Notes
+#### Notes
 
 - forced an out-of-band poll on 2 scheduler pod(s)
 - deliver_at spread: none (all schedules mature in a single wheel slot)
-```

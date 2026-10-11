@@ -188,11 +188,26 @@ func (r reference) markdown() string {
 		p("")
 		p("### %s — %s", res.Scenario, res.Label)
 		p("")
-		p("```")
-		p("%s", strings.TrimSpace(res.Markdown()))
-		p("```")
+		p("%s", nestPoint(res.Markdown()))
 	}
 	return b.String()
+}
+
+// nestPoint fits a point's own report under its ### heading: the title and
+// label lines repeat that heading, so they go, and its sections drop to ####.
+func nestPoint(md string) string {
+	var out []string
+	for line := range strings.Lines(strings.TrimSpace(md)) {
+		line = strings.TrimRight(line, "\n")
+		switch {
+		case strings.HasPrefix(line, "# "), strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**"):
+			continue
+		case strings.HasPrefix(line, "## "):
+			line = "##" + line
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func deliveredOf(res *bench.Result) int {
