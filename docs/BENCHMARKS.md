@@ -3,9 +3,8 @@
 What Hatch can absorb, what stops it going faster, and which knob moves each
 ceiling.
 
-The numbers cited here all come from [`benchmarks/reference.md`](../benchmarks/reference.md),
-which is written by the harness. Nothing in this file is typed by hand except
-the reasoning. If the two ever disagree, the generated file is the measurement.
+The numbers cited here all come from [`benchmarks/reference.md`](../benchmarks/reference.md).
+If the two ever disagree, that file is the measurement.
 
 That run measured commit `cdce4be`. The scheduler and the delivery workers have
 changed since, so run `make bench-all` again before relying on their ceilings.
