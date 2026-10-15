@@ -9,6 +9,12 @@ import (
 	"testing"
 	"uuid"
 
+	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -123,5 +129,47 @@ func TestDecode(t *testing.T) {
 				t.Fatalf("decode ok=%v status=%d, want %d", ok, rr.Code, c.want)
 			}
 		})
+	}
+}
+
+// authenticate hands the next handler a copy of the request, so chi records
+// the inner route on the copy and otelhttp's own request keeps "/v1/*". The
+// span must still be named, and carry its http.route, by the full route.
+func TestSpansAreNamedByRoute(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	copyRequest := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientKey{}, authClient{})))
+		})
+	}
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(otelhttp.NewMiddleware("scheduler-api", otelhttp.WithSpanNameFormatter(spanName)), observe)
+		r.Route("/v1", func(r chi.Router) {
+			r.Use(copyRequest)
+			r.Get("/schedules/{schedule_id}", func(http.ResponseWriter, *http.Request) {})
+		})
+	})
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/schedules/x", nil))
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	if got, want := spans[0].Name(), "GET /v1/schedules/{schedule_id}"; got != want {
+		t.Errorf("span name = %q, want %q", got, want)
+	}
+	var gotRoute string
+	for _, kv := range spans[0].Attributes() {
+		if kv.Key == semconv.HTTPRouteKey {
+			gotRoute = kv.Value.AsString()
+		}
+	}
+	if want := "/v1/schedules/{schedule_id}"; gotRoute != want {
+		t.Errorf("http.route = %q, want %q", gotRoute, want)
 	}
 }

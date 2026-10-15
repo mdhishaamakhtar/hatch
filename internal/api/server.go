@@ -29,6 +29,7 @@ import (
 	"github.com/redis/rueidis"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -117,7 +118,7 @@ func (s *Server) Handler() http.Handler {
 	)
 	r.Get("/swagger/*", httpSwagger.Handler(httpSwagger.URL("/swagger/doc.json")))
 	r.Group(func(r chi.Router) {
-		r.Use(otelhttp.NewMiddleware("scheduler-api"), observe)
+		r.Use(otelhttp.NewMiddleware("scheduler-api", otelhttp.WithSpanNameFormatter(spanName)), observe)
 		r.Route("/v1", func(r chi.Router) {
 			r.Use(s.authenticate, s.rateLimit)
 			r.Post("/schedules", s.createSchedule)
@@ -135,17 +136,29 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
-// observe records each request's metrics, and names its trace span, by the
-// route it matched rather than its raw path, which keeps both bounded.
+// route names a request by the route it matched rather than its raw path,
+// which keeps metric labels and span names bounded. It reads chi's route
+// context once the request has been routed: r.Pattern only holds the pattern
+// of the router the request was in at the time, such as "/v1/*".
+func route(r *http.Request) string {
+	return r.Method + " " + chi.RouteContext(r.Context()).RoutePattern()
+}
+
+// spanName names the API's spans for otelhttp, which renames each span after
+// the request is served.
+func spanName(_ string, r *http.Request) string { return route(r) }
+
+// observe records each request's metrics, and corrects its span's http.route,
+// which otelhttp sets from r.Pattern when the span starts.
 func observe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		route := r.Method + " " + chi.RouteContext(r.Context()).RoutePattern()
-		trace.SpanFromContext(r.Context()).SetName(route)
-		requests.WithLabelValues(route, statusLabel(ww.Status())).Inc()
-		requestDuration.WithLabelValues(route).Observe(time.Since(start).Seconds())
+		trace.SpanFromContext(r.Context()).SetAttributes(semconv.HTTPRoute(chi.RouteContext(r.Context()).RoutePattern()))
+		name := route(r)
+		requests.WithLabelValues(name, statusLabel(ww.Status())).Inc()
+		requestDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
 	})
 }
 

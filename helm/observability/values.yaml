@@ -112,6 +112,7 @@ kps:
     additionalDataSources:
       - name: Loki
         type: loki
+        uid: loki
         access: proxy
         url: http://observability-loki-gateway.observability.svc.cluster.local
         jsonData:
@@ -126,9 +127,16 @@ kps:
         access: proxy
         url: http://observability-tempo.observability.svc.cluster.local:3200
         jsonData:
+          # Find a trace's logs by the trace_id the services write on each
+          # line. service.name can't be matched to a Loki label: the API and
+          # scheduler report scheduler-api and scheduler-service, while their
+          # pods are labelled api and scheduler.
           tracesToLogsV2:
             datasourceUid: loki
-            tags: ['service.name']
+            spanStartTimeShift: '-1m'
+            spanEndTimeShift: '1m'
+            customQuery: true
+            query: '{namespace="hatch"} |= `$${__trace.traceId}`'
 
 loki:
   deploymentMode: SingleBinary
