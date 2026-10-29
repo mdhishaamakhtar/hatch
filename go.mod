@@ -6,7 +6,7 @@ tool github.com/swaggo/swag/cmd/swag
 
 require (
 	github.com/caarlos0/env/v11 v11.4.1
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/rueidis v1.0.78
